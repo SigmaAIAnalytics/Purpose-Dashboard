@@ -654,6 +654,25 @@ if run_clicked:
         weekly_df  = _monthly_to_weekly(valid_rows.copy())
         results_df = run_predictions(weekly_df, st.session_state.coeff_df)
 
+        # Baseline: same weeks/states with all spend zeroed
+        zero_df = weekly_df.copy()
+        for _c in SPEND_COLUMNS:
+            zero_df[_c] = 0.0
+        baseline_df = run_predictions(zero_df, st.session_state.coeff_df)
+
+        baseline_lookup = (
+            baseline_df[["State", "ISO Year", "ISO Week", "Model_Key", "Predicted APPS"]]
+            .rename(columns={"Predicted APPS": "Baseline APPS"})
+        )
+        results_df = results_df.merge(
+            baseline_lookup,
+            on=["State", "ISO Year", "ISO Week", "Model_Key"],
+            how="left",
+        )
+        results_df["Incremental APPS"] = (
+            results_df["Predicted APPS"] - results_df["Baseline APPS"].fillna(0)
+        ).round().astype("Int64")
+
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
 
@@ -685,7 +704,7 @@ if st.session_state.results_df is not None:
             "State", "ISO Year", "ISO Week", "Month",
             *SPEND_COLUMNS,
             "Channel", "H_Tactic", "Detail_Tactic", "Product",
-            "Predicted APPS",
+            "Predicted APPS", "Baseline APPS", "Incremental APPS",
         ]
         primary_cols = [c for c in primary_cols if c in results_df.columns]
 
@@ -747,6 +766,8 @@ if st.session_state.results_df is not None:
                     {
                         **{c: "{:,.2f}" for c in SPEND_COLUMNS if c in display_df.columns},
                         "Predicted APPS":               "{:,}",
+                        "Baseline APPS":                "{:,}",
+                        "Incremental APPS":             "{:,}",
                         "95% Confidence Lower Limit":   "{:,}",
                         "95% Confidence Upper Limit":   "{:,}",
                     },
@@ -767,7 +788,7 @@ if st.session_state.results_df is not None:
         "State", "ISO Year", "ISO Week", "Month",
         *SPEND_COLUMNS,
         "Channel", "H_Tactic", "Detail_Tactic", "Product",
-        "Predicted APPS", "raw_prediction",
+        "Predicted APPS", "Baseline APPS", "Incremental APPS", "raw_prediction",
         "95% Confidence Lower Limit", "95% Confidence Upper Limit",
         "time_index", "time_index_sq",
         "DSP_contrib", "LeadGen_contrib", "Paid_Search_contrib",
