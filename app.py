@@ -696,20 +696,42 @@ if st.session_state.results_df is not None:
         )
 
         # ── Output filters ────────────────────────────────────────────────────
-        _fc1, _fc2, _fc3 = st.columns(3)
+        _ff1, _ff2, _ff3, _ff4, _ff5 = st.columns(5)
 
-        _ch_opts = ["All"] + sorted(ok_rows["Channel"].dropna().unique().tolist())
-        _sel_ch  = _fc1.selectbox("Filter by Channel", _ch_opts, key="filter_channel")
+        _MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+                       7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
 
-        _ht_base = ok_rows if _sel_ch == "All" else ok_rows[ok_rows["Channel"] == _sel_ch]
+        # State (independent)
+        _st_opts = ["All"] + sorted(ok_rows["State"].dropna().unique().tolist())
+        _sel_st  = _ff1.selectbox("Filter by State", _st_opts, key="filter_state")
+
+        # Month (scoped to State)
+        _mo_base  = ok_rows if _sel_st == "All" else ok_rows[ok_rows["State"] == _sel_st]
+        _mo_nums  = sorted(_mo_base["Month"].dropna().unique().astype(int).tolist())
+        _mo_labels= [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
+        _mo_map   = dict(zip(_mo_labels, _mo_nums))
+        _sel_mo   = _ff2.selectbox("Filter by Month", ["All"] + _mo_labels, key="filter_month")
+
+        # Channel (scoped to State + Month)
+        _ch_base = _mo_base if _sel_mo == "All" else _mo_base[_mo_base["Month"] == _mo_map[_sel_mo]]
+        _ch_opts = ["All"] + sorted(_ch_base["Channel"].dropna().unique().tolist())
+        _sel_ch  = _ff3.selectbox("Filter by Channel", _ch_opts, key="filter_channel")
+
+        # H_Tactic (scoped to Channel)
+        _ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
         _ht_opts = ["All"] + sorted(_ht_base["H_Tactic"].dropna().unique().tolist())
-        _sel_ht  = _fc2.selectbox("Filter by H_Tactic", _ht_opts, key="filter_h_tactic")
+        _sel_ht  = _ff4.selectbox("Filter by H_Tactic", _ht_opts, key="filter_h_tactic")
 
+        # Detail_Tactic (scoped to H_Tactic)
         _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
         _dt_opts = ["All"] + sorted(_dt_base["Detail_Tactic"].dropna().unique().tolist())
-        _sel_dt  = _fc3.selectbox("Filter by Detail_Tactic", _dt_opts, key="filter_detail_tactic")
+        _sel_dt  = _ff5.selectbox("Filter by Detail_Tactic", _dt_opts, key="filter_detail_tactic")
 
         display_df = results_df.copy()
+        if _sel_st != "All":
+            display_df = display_df[display_df["State"] == _sel_st]
+        if _sel_mo != "All":
+            display_df = display_df[display_df["Month"] == _mo_map[_sel_mo]]
         if _sel_ch != "All":
             display_df = display_df[display_df["Channel"] == _sel_ch]
         if _sel_ht != "All":
