@@ -669,9 +669,10 @@ if run_clicked:
             on=["State", "ISO Year", "ISO Week", "Model_Key"],
             how="left",
         )
+        results_df["Baseline APPS"] = results_df[["Predicted APPS", "Baseline APPS"]].min(axis=1)
         results_df["Incremental APPS"] = (
             results_df["Predicted APPS"] - results_df["Baseline APPS"].fillna(0)
-        ).round().astype("Int64")
+        ).clip(lower=0).round().astype("Int64")
 
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
