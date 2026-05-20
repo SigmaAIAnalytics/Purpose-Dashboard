@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
+from build_state_division_models import spread_monthly_spend_to_weekly
 
 st.set_page_config(
     page_title="Purpose Predictor — Application Calculator",
@@ -176,6 +177,55 @@ TACTIC_MAP = {
     "Referrals ($)":    ("Referrals",    "Referrals_contrib"),
     "Sweepstakes ($)":  ("Sweepstakes",  "Sweepstakes_contrib"),
 }
+
+_COL_TO_TACTIC = {col: names[0] for col, names in TACTIC_MAP.items()}
+_TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
+
+
+# ── Monthly → weekly spend conversion ────────────────────────────────────────
+def _monthly_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """Pro-rate wide monthly spend to weekly using day-count allocation."""
+    long = (
+        df.rename(columns={"Date": "BUSINESS_DATE", "State": "STATE_CD"})
+        .melt(
+            id_vars=["BUSINESS_DATE", "STATE_CD"],
+            value_vars=SPEND_COLUMNS,
+            var_name="_col",
+            value_name="TOTAL_COST",
+        )
+    )
+    long["DETAIL_TACTIC"] = long["_col"].map(_COL_TO_TACTIC)
+    long = long.drop(columns=["_col"])
+    long["TOTAL_COST"] = pd.to_numeric(long["TOTAL_COST"], errors="coerce").fillna(0.0)
+    long["BUSINESS_DATE"] = pd.to_datetime(long["BUSINESS_DATE"])
+
+    weekly = spread_monthly_spend_to_weekly(long, monthly_tactics=["Prescreen"])
+    weekly = weekly.dropna(subset=["ISO_WEEK"])
+    weekly["ISO_WEEK"] = weekly["ISO_WEEK"].astype(int)
+    weekly["ISO_YEAR"] = weekly["ISO_YEAR"].astype(int)
+
+    weekly["_col"] = weekly["DETAIL_TACTIC"].map(_TACTIC_TO_COL)
+    weekly = weekly.dropna(subset=["_col"])
+
+    wide = (
+        weekly.groupby(["STATE_CD", "ISO_YEAR", "ISO_WEEK", "_col"])["TOTAL_COST"]
+        .sum()
+        .unstack("_col")
+        .reset_index()
+    )
+
+    for col in SPEND_COLUMNS:
+        if col not in wide.columns:
+            wide[col] = 0.0
+    wide[SPEND_COLUMNS] = wide[SPEND_COLUMNS].fillna(0.0)
+
+    wide["Date"] = wide.apply(
+        lambda r: date.fromisocalendar(int(r["ISO_YEAR"]), int(r["ISO_WEEK"]), 1),
+        axis=1,
+    )
+    wide = wide.rename(columns={"STATE_CD": "State"})
+    return wide[["Date", "State"] + SPEND_COLUMNS]
+
 
 # ── Key parsing helpers ───────────────────────────────────────────────────────
 def _parse_key(key: str) -> dict:
@@ -601,7 +651,8 @@ if run_clicked:
 
     # ── Run ───────────────────────────────────────────────────────────────────
     with st.spinner("Running predictions…"):
-        results_df = run_predictions(valid_rows.copy(), st.session_state.coeff_df)
+        weekly_df  = _monthly_to_weekly(valid_rows.copy())
+        results_df = run_predictions(weekly_df, st.session_state.coeff_df)
 
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
