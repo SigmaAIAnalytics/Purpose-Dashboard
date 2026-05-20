@@ -629,25 +629,6 @@ if st.session_state.results_df is not None:
             )
 
     if not ok_rows.empty:
-        # State-level rows only (Channel IS NULL) → metric cards
-        state_rows = ok_rows[ok_rows["Channel"].isna()]
-
-        if not state_rows.empty:
-            st.markdown("**State-level summary**")
-            card_rows = state_rows.drop_duplicates(subset=["State", "ISO Year", "ISO Week"]).head(6)
-            cols = st.columns(min(len(card_rows), 6))
-            for i, (_, r) in enumerate(card_rows.iterrows()):
-                with cols[i]:
-                    pred  = r["Predicted APPS"]
-                    lower = r["95% Confidence Lower Limit"]
-                    upper = r["95% Confidence Upper Limit"]
-                    st.metric(
-                        label=f"{r['State']} · W{r['ISO Week']}",
-                        value=f"{pred:,}" if pd.notna(pred) else "N/A",
-                        delta=f"CI  {lower:,} – {upper:,}" if pd.notna(lower) else "",
-                    )
-            st.markdown("<br>", unsafe_allow_html=True)
-
         # ── Primary output table (matches Output_Data column order) ───────────
         primary_cols = [
             "State", "ISO Year", "ISO Week", "Month",
