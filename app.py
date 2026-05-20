@@ -262,7 +262,7 @@ def _score_coeff_row(
     upper_ci = prediction + 1.96 * sigma
 
     return {
-        "Predicted APPS":               int(round(prediction)),
+        "Predicted APPS":               max(0, int(round(prediction))),
         "raw_prediction":               round(prediction, 6),
         "95% Confidence Lower Limit":   int(round(lower_ci)),
         "95% Confidence Upper Limit":   int(round(upper_ci)),
