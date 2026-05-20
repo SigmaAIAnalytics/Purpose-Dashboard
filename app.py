@@ -663,20 +663,45 @@ if st.session_state.results_df is not None:
             "state-week combination(s)"
         )
 
-        st.dataframe(
-            results_df[primary_cols].style.format(
-                {
-                    **{c: "{:,.2f}" for c in SPEND_COLUMNS if c in results_df.columns},
-                    "Predicted APPS":               "{:,}",
-                    "95% Confidence Lower Limit":   "{:,}",
-                    "95% Confidence Upper Limit":   "{:,}",
-                },
-                na_rep="",
-            ),
-            use_container_width=True,
-            height=min(400, 45 + len(results_df) * 35),
-            hide_index=True,
-        )
+        # ── Output filters ────────────────────────────────────────────────────
+        _fc1, _fc2, _fc3 = st.columns(3)
+
+        _ch_opts = ["All"] + sorted(ok_rows["Channel"].dropna().unique().tolist())
+        _sel_ch  = _fc1.selectbox("Filter by Channel", _ch_opts, key="filter_channel")
+
+        _ht_base = ok_rows if _sel_ch == "All" else ok_rows[ok_rows["Channel"] == _sel_ch]
+        _ht_opts = ["All"] + sorted(_ht_base["H_Tactic"].dropna().unique().tolist())
+        _sel_ht  = _fc2.selectbox("Filter by H_Tactic", _ht_opts, key="filter_h_tactic")
+
+        _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
+        _dt_opts = ["All"] + sorted(_dt_base["Detail_Tactic"].dropna().unique().tolist())
+        _sel_dt  = _fc3.selectbox("Filter by Detail_Tactic", _dt_opts, key="filter_detail_tactic")
+
+        display_df = results_df.copy()
+        if _sel_ch != "All":
+            display_df = display_df[display_df["Channel"] == _sel_ch]
+        if _sel_ht != "All":
+            display_df = display_df[display_df["H_Tactic"] == _sel_ht]
+        if _sel_dt != "All":
+            display_df = display_df[display_df["Detail_Tactic"] == _sel_dt]
+
+        if display_df.empty:
+            st.info("No rows match the selected filters.")
+        else:
+            st.dataframe(
+                display_df[primary_cols].style.format(
+                    {
+                        **{c: "{:,.2f}" for c in SPEND_COLUMNS if c in display_df.columns},
+                        "Predicted APPS":               "{:,}",
+                        "95% Confidence Lower Limit":   "{:,}",
+                        "95% Confidence Upper Limit":   "{:,}",
+                    },
+                    na_rep="",
+                ),
+                use_container_width=True,
+                height=min(400, 45 + len(display_df) * 35),
+                hide_index=True,
+            )
 
     # ── Download buttons ──────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
