@@ -492,6 +492,7 @@ if "pf_source"         not in st.session_state: st.session_state.pf_source      
 if "upload_df"         not in st.session_state: st.session_state.upload_df         = None
 if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
 if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
+if "spend_source"      not in st.session_state: st.session_state.spend_source      = None
 
 # ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
 if st.session_state.coeff_df is None:
@@ -509,6 +510,16 @@ if st.session_state.product_factors_df is None:
         if _pf_required.issubset(set(_spaces_pf.columns)):
             st.session_state.product_factors_df = _spaces_pf
             st.session_state.pf_source           = "spaces"
+
+if st.session_state.upload_df is None:
+    _spaces_spend = _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
+    if _spaces_spend is not None:
+        try:
+            st.session_state.upload_df    = _normalise_upload(_spaces_spend)
+            st.session_state.spend_source = "spaces"
+            st.session_state.upload_version += 1
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
