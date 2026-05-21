@@ -795,7 +795,7 @@ if st.session_state.results_df is not None:
                 st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique().tolist()
             )
             _prod_col, _ = st.columns([1, 4])
-            _sel_prod = _prod_col.selectbox("Filter by Product", _prod_opts, key="filter_product")
+            _sel_prod = _prod_col.selectbox("Filter by Product Funded", _prod_opts, key="filter_product")
 
         # Apply row filters
         display_df = results_df.copy()
