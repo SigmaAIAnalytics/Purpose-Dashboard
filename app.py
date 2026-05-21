@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any
 
+import boto3
 import numpy as np
 import pandas as pd
 import streamlit as st
+from botocore.client import Config as _BotoConfig
 from build_state_division_models import spread_monthly_spend_to_weekly
 
 st.set_page_config(
@@ -183,6 +186,51 @@ _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
 
 def _safe_col(name: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in str(name)).strip("_")
+
+
+# ── DigitalOcean Spaces helpers ───────────────────────────────────────────────
+def _get_spaces_client():
+    key    = os.environ.get("SPACES_KEY", "")
+    secret = os.environ.get("SPACES_SECRET", "")
+    region = os.environ.get("SPACES_REGION", "lon1")
+    bucket = os.environ.get("SPACES_BUCKET", "")
+    if not (key and secret and bucket):
+        return None, ""
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://{region}.digitaloceanspaces.com",
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
+        config=_BotoConfig(signature_version="s3v4"),
+    )
+    return client, bucket
+
+
+def _load_df_from_spaces(
+    file_env_var: str,
+    default_filename: str,
+    excel_sheet: str | None = None,
+) -> pd.DataFrame | None:
+    """Fetch a CSV or Excel file from DO Spaces. Returns None if unconfigured or missing."""
+    client, bucket = _get_spaces_client()
+    if client is None:
+        return None
+    filename = os.environ.get(file_env_var, default_filename)
+    try:
+        obj  = client.get_object(Bucket=bucket, Key=filename)
+        data = obj["Body"].read()
+        if filename.lower().endswith((".xlsx", ".xls")):
+            xl    = pd.ExcelFile(BytesIO(data))
+            sheet = (
+                excel_sheet
+                if excel_sheet and excel_sheet in xl.sheet_names
+                else xl.sheet_names[0]
+            )
+            return xl.parse(sheet)
+        return pd.read_csv(BytesIO(data))
+    except Exception:
+        return None
 
 
 # ── Monthly → weekly spend conversion ────────────────────────────────────────
@@ -438,10 +486,29 @@ def to_excel_bytes(results_df: pd.DataFrame, input_df: pd.DataFrame) -> bytes:
 if "results_df"        not in st.session_state: st.session_state.results_df        = None
 if "input_snap"        not in st.session_state: st.session_state.input_snap        = None
 if "coeff_df"          not in st.session_state: st.session_state.coeff_df          = None
+if "coeff_source"      not in st.session_state: st.session_state.coeff_source      = None
 if "product_factors_df"not in st.session_state: st.session_state.product_factors_df= None
+if "pf_source"         not in st.session_state: st.session_state.pf_source         = None
 if "upload_df"         not in st.session_state: st.session_state.upload_df         = None
 if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
 if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
+
+# ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
+if st.session_state.coeff_df is None:
+    _spaces_coeff = _load_df_from_spaces(
+        "SPACES_COEFF_FILE", "model_coefficients.csv", excel_sheet="MODEL_Coefficients"
+    )
+    if _spaces_coeff is not None:
+        st.session_state.coeff_df     = _spaces_coeff
+        st.session_state.coeff_source = "spaces"
+
+if st.session_state.product_factors_df is None:
+    _spaces_pf = _load_df_from_spaces("SPACES_PF_FILE", "product_factors.csv")
+    if _spaces_pf is not None:
+        _pf_required = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
+        if _pf_required.issubset(set(_spaces_pf.columns)):
+            st.session_state.product_factors_df = _spaces_pf
+            st.session_state.pf_source           = "spaces"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -449,62 +516,138 @@ if "last_input_name"   not in st.session_state: st.session_state.last_input_name
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## ⚙️ Model Coefficients")
-    st.markdown("Upload the `MODEL_Coefficients` sheet from the Excel workbook.")
 
-    coeff_file = st.file_uploader(
-        "Upload Model Coefficients",
-        type=["csv", "xlsx"],
-        key="coeff_uploader",
-    )
-
-    if coeff_file:
-        try:
-            if coeff_file.name.endswith(".csv"):
-                coeff_df = pd.read_csv(coeff_file)
-            else:
-                xl = pd.ExcelFile(coeff_file)
-                sheet = (
-                    "MODEL_Coefficients"
-                    if "MODEL_Coefficients" in xl.sheet_names
-                    else xl.sheet_names[0]
-                )
-                coeff_df = xl.parse(sheet)
-
-            st.session_state.coeff_df = coeff_df
-            keys = coeff_df["Key"].dropna().tolist() if "Key" in coeff_df.columns else []
-            st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
-
-        except Exception as e:
-            st.error(f"Failed to read coefficient file: {e}")
-
+    if st.session_state.coeff_source == "spaces":
+        _coeff_keys = (
+            st.session_state.coeff_df["Key"].dropna().tolist()
+            if "Key" in st.session_state.coeff_df.columns else []
+        )
+        st.success(f"✅ Auto-loaded from Spaces — {len(_coeff_keys)} model keys")
+        with st.expander("Override with a local file"):
+            _ov_coeff = st.file_uploader(
+                "Upload Model Coefficients",
+                type=["csv", "xlsx"],
+                key="coeff_uploader",
+            )
+            if _ov_coeff:
+                try:
+                    if _ov_coeff.name.endswith(".csv"):
+                        _ov_df = pd.read_csv(_ov_coeff)
+                    else:
+                        _xl = pd.ExcelFile(_ov_coeff)
+                        _sh = (
+                            "MODEL_Coefficients"
+                            if "MODEL_Coefficients" in _xl.sheet_names
+                            else _xl.sheet_names[0]
+                        )
+                        _ov_df = _xl.parse(_sh)
+                    st.session_state.coeff_df     = _ov_df
+                    st.session_state.coeff_source = "upload"
+                    _ov_keys = _ov_df["Key"].dropna().tolist() if "Key" in _ov_df.columns else []
+                    st.success(f"✅ Overridden — {len(_ov_keys)} keys loaded")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
     else:
-        st.info("No file uploaded yet.")
+        st.markdown("Upload the `MODEL_Coefficients` sheet from the Excel workbook.")
+        coeff_file = st.file_uploader(
+            "Upload Model Coefficients",
+            type=["csv", "xlsx"],
+            key="coeff_uploader",
+        )
+        if coeff_file:
+            try:
+                if coeff_file.name.endswith(".csv"):
+                    coeff_df = pd.read_csv(coeff_file)
+                else:
+                    xl = pd.ExcelFile(coeff_file)
+                    sheet = (
+                        "MODEL_Coefficients"
+                        if "MODEL_Coefficients" in xl.sheet_names
+                        else xl.sheet_names[0]
+                    )
+                    coeff_df = xl.parse(sheet)
+                st.session_state.coeff_df     = coeff_df
+                st.session_state.coeff_source = "upload"
+                keys = coeff_df["Key"].dropna().tolist() if "Key" in coeff_df.columns else []
+                st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
+            except Exception as e:
+                st.error(f"Failed to read coefficient file: {e}")
+        else:
+            if st.session_state.coeff_df is not None:
+                keys = (
+                    st.session_state.coeff_df["Key"].dropna().tolist()
+                    if "Key" in st.session_state.coeff_df.columns else []
+                )
+                st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
+            else:
+                st.info("No file uploaded yet.")
 
     st.markdown("---")
     st.markdown("## 📦 Product Factors")
-    st.markdown("Upload the `product_factors.csv` produced alongside the coefficients file.")
 
-    pf_file = st.file_uploader(
-        "Upload Product Factors",
-        type=["csv"],
-        key="pf_uploader",
-    )
-
-    if pf_file:
-        try:
-            pf_df = pd.read_csv(pf_file)
-            required_pf = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
-            missing_pf  = required_pf - set(pf_df.columns)
-            if missing_pf:
-                st.error(f"Missing columns: {', '.join(sorted(missing_pf))}")
-            else:
-                st.session_state.product_factors_df = pf_df
-                products = pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
-                st.success(f"✅ Product factors loaded — {len(products)} product(s): {', '.join(sorted(products))}")
-        except Exception as e:
-            st.error(f"Failed to read product factors file: {e}")
+    if st.session_state.pf_source == "spaces":
+        _pf_products = (
+            st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+        )
+        st.success(
+            f"✅ Auto-loaded from Spaces — {len(_pf_products)} product(s): "
+            f"{', '.join(sorted(_pf_products))}"
+        )
+        with st.expander("Override with a local file"):
+            _ov_pf = st.file_uploader(
+                "Upload Product Factors",
+                type=["csv"],
+                key="pf_uploader",
+            )
+            if _ov_pf:
+                try:
+                    _ov_pf_df = pd.read_csv(_ov_pf)
+                    _pf_req   = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
+                    _pf_miss  = _pf_req - set(_ov_pf_df.columns)
+                    if _pf_miss:
+                        st.error(f"Missing columns: {', '.join(sorted(_pf_miss))}")
+                    else:
+                        st.session_state.product_factors_df = _ov_pf_df
+                        st.session_state.pf_source           = "upload"
+                        _ov_prods = _ov_pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+                        st.success(f"✅ Overridden — {len(_ov_prods)} product(s)")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
     else:
-        st.info("No file uploaded yet.")
+        st.markdown("Upload the `product_factors.csv` produced alongside the coefficients file.")
+        pf_file = st.file_uploader(
+            "Upload Product Factors",
+            type=["csv"],
+            key="pf_uploader",
+        )
+        if pf_file:
+            try:
+                pf_df = pd.read_csv(pf_file)
+                required_pf = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
+                missing_pf  = required_pf - set(pf_df.columns)
+                if missing_pf:
+                    st.error(f"Missing columns: {', '.join(sorted(missing_pf))}")
+                else:
+                    st.session_state.product_factors_df = pf_df
+                    st.session_state.pf_source           = "upload"
+                    products = pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+                    st.success(
+                        f"✅ Product factors loaded — {len(products)} product(s): "
+                        f"{', '.join(sorted(products))}"
+                    )
+            except Exception as e:
+                st.error(f"Failed to read product factors file: {e}")
+        else:
+            if st.session_state.product_factors_df is not None:
+                products = (
+                    st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+                )
+                st.success(
+                    f"✅ Product factors loaded — {len(products)} product(s): "
+                    f"{', '.join(sorted(products))}"
+                )
+            else:
+                st.info("No file uploaded yet.")
 
     st.markdown("---")
     st.markdown(
