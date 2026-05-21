@@ -181,6 +181,9 @@ TACTIC_MAP = {
 _COL_TO_TACTIC = {col: names[0] for col, names in TACTIC_MAP.items()}
 _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
 
+def _safe_col(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in str(name)).strip("_")
+
 
 # ── Monthly → weekly spend conversion ────────────────────────────────────────
 def _monthly_to_weekly(df: pd.DataFrame) -> pd.DataFrame:
@@ -432,12 +435,13 @@ def to_excel_bytes(results_df: pd.DataFrame, input_df: pd.DataFrame) -> bytes:
 
 
 # ── Session state init ────────────────────────────────────────────────────────
-if "results_df"     not in st.session_state: st.session_state.results_df     = None
-if "input_snap"     not in st.session_state: st.session_state.input_snap     = None
-if "coeff_df"       not in st.session_state: st.session_state.coeff_df       = None
-if "upload_df"      not in st.session_state: st.session_state.upload_df      = None
-if "upload_version" not in st.session_state: st.session_state.upload_version = 0
-if "last_input_name"not in st.session_state: st.session_state.last_input_name= None
+if "results_df"        not in st.session_state: st.session_state.results_df        = None
+if "input_snap"        not in st.session_state: st.session_state.input_snap        = None
+if "coeff_df"          not in st.session_state: st.session_state.coeff_df          = None
+if "product_factors_df"not in st.session_state: st.session_state.product_factors_df= None
+if "upload_df"         not in st.session_state: st.session_state.upload_df         = None
+if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
+if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -476,6 +480,32 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Failed to read coefficient file: {e}")
 
+    else:
+        st.info("No file uploaded yet.")
+
+    st.markdown("---")
+    st.markdown("## 📦 Product Factors")
+    st.markdown("Upload the `product_factors.csv` produced alongside the coefficients file.")
+
+    pf_file = st.file_uploader(
+        "Upload Product Factors",
+        type=["csv"],
+        key="pf_uploader",
+    )
+
+    if pf_file:
+        try:
+            pf_df = pd.read_csv(pf_file)
+            required_pf = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
+            missing_pf  = required_pf - set(pf_df.columns)
+            if missing_pf:
+                st.error(f"Missing columns: {', '.join(sorted(missing_pf))}")
+            else:
+                st.session_state.product_factors_df = pf_df
+                products = pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+                st.success(f"✅ Product factors loaded — {len(products)} product(s): {', '.join(sorted(products))}")
+        except Exception as e:
+            st.error(f"Failed to read product factors file: {e}")
     else:
         st.info("No file uploaded yet.")
 
@@ -674,6 +704,29 @@ if run_clicked:
             results_df["Predicted APPS"] - results_df["Baseline APPS"].fillna(0)
         ).clip(lower=0).round().astype("Int64")
 
+        # Product allocation (only if factors file is loaded)
+        if st.session_state.product_factors_df is not None:
+            pf = st.session_state.product_factors_df.copy()
+            pf["PRODUCT_FUNDED"] = pf["PRODUCT_FUNDED"].astype(str)
+            results_df["Allocated_Approved"]     = 0.0
+            results_df["Allocated_Originations"] = 0.0
+            for product, grp in pf.groupby("PRODUCT_FUNDED", dropna=False):
+                pkey    = _safe_col(product)
+                factors = results_df[["Model_Key"]].merge(
+                    grp[["Key", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"]],
+                    left_on="Model_Key", right_on="Key", how="left",
+                )
+                apps   = results_df["raw_prediction"].clip(lower=0) * factors["APPLICATION_SHARE"].fillna(0).values
+                approv = apps * factors["APPROVAL_RATE"].fillna(0).values
+                orig   = apps * factors["ORIGINATION_RATE"].fillna(0).values
+                results_df[f"Applications_{pkey}"] = apps.round().astype(int)
+                results_df[f"Approvals_{pkey}"]    = approv.round().astype(int)
+                results_df[f"Originations_{pkey}"] = orig.round().astype(int)
+                results_df["Allocated_Approved"]     += approv.fillna(0)
+                results_df["Allocated_Originations"] += orig.fillna(0)
+            results_df["Allocated_Approved"]     = results_df["Allocated_Approved"].round().astype(int)
+            results_df["Allocated_Originations"] = results_df["Allocated_Originations"].round().astype(int)
+
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
 
@@ -700,15 +753,6 @@ if st.session_state.results_df is not None:
             )
 
     if not ok_rows.empty:
-        # ── Primary output table (matches Output_Data column order) ───────────
-        primary_cols = [
-            "State", "ISO Year", "ISO Week", "Month",
-            *SPEND_COLUMNS,
-            "Channel", "H_Tactic", "Detail_Tactic", "Product",
-            "Predicted APPS", "Baseline APPS", "Incremental APPS",
-        ]
-        primary_cols = [c for c in primary_cols if c in results_df.columns]
-
         st.success(
             f"✅ {len(ok_rows)} prediction row(s) across "
             f"{ok_rows[['State','ISO Year','ISO Week']].drop_duplicates().shape[0]} "
@@ -747,6 +791,16 @@ if st.session_state.results_df is not None:
         _dt_opts = ["All"] + sorted(_dt_base["Detail_Tactic"].dropna().unique().tolist())
         _sel_dt  = _ff5.selectbox("Filter by Detail_Tactic", _dt_opts, key="filter_detail_tactic")
 
+        # Product (only shown if product factors file is loaded)
+        _sel_prod = "All"
+        if st.session_state.product_factors_df is not None:
+            _prod_opts = ["All"] + sorted(
+                st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique().tolist()
+            )
+            _prod_col, _ = st.columns([1, 4])
+            _sel_prod = _prod_col.selectbox("Filter by Product", _prod_opts, key="filter_product")
+
+        # Apply row filters
         display_df = results_df.copy()
         if _sel_st != "All":
             display_df = display_df[display_df["State"] == _sel_st]
@@ -758,6 +812,28 @@ if st.session_state.results_df is not None:
             display_df = display_df[display_df["H_Tactic"] == _sel_ht]
         if _sel_dt != "All":
             display_df = display_df[display_df["Detail_Tactic"] == _sel_dt]
+
+        # ── Primary output table ──────────────────────────────────────────────
+        primary_cols = [
+            "State", "ISO Year", "ISO Week", "Month",
+            *SPEND_COLUMNS,
+            "Channel", "H_Tactic", "Detail_Tactic", "Product",
+            "Predicted APPS", "Baseline APPS", "Incremental APPS",
+        ]
+        _prod_format: dict = {}
+        if st.session_state.product_factors_df is not None:
+            if _sel_prod == "All":
+                primary_cols += ["Allocated_Approved", "Allocated_Originations"]
+                _prod_format  = {"Allocated_Approved": "{:,}", "Allocated_Originations": "{:,}"}
+            else:
+                _pkey = _safe_col(_sel_prod)
+                primary_cols += [f"Applications_{_pkey}", f"Approvals_{_pkey}", f"Originations_{_pkey}"]
+                _prod_format  = {
+                    f"Applications_{_pkey}": "{:,}",
+                    f"Approvals_{_pkey}":    "{:,}",
+                    f"Originations_{_pkey}": "{:,}",
+                }
+        primary_cols = [c for c in primary_cols if c in results_df.columns]
 
         if display_df.empty:
             st.info("No rows match the selected filters.")
@@ -771,6 +847,7 @@ if st.session_state.results_df is not None:
                         "Incremental APPS":             "{:,}",
                         "95% Confidence Lower Limit":   "{:,}",
                         "95% Confidence Upper Limit":   "{:,}",
+                        **_prod_format,
                     },
                     na_rep="",
                 ),
@@ -789,7 +866,8 @@ if st.session_state.results_df is not None:
         "State", "ISO Year", "ISO Week", "Month",
         *SPEND_COLUMNS,
         "Channel", "H_Tactic", "Detail_Tactic", "Product",
-        "Predicted APPS", "Baseline APPS", "Incremental APPS", "raw_prediction",
+        "Predicted APPS", "Baseline APPS", "Incremental APPS",
+        "Allocated_Approved", "Allocated_Originations", "raw_prediction",
         "95% Confidence Lower Limit", "95% Confidence Upper Limit",
         "time_index", "time_index_sq",
         "DSP_contrib", "LeadGen_contrib", "Paid_Search_contrib",
