@@ -13,6 +13,12 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Model output data (generated artefacts, not source)
+model output/
+
 # Uploads / local data (coefficient files may be sensitive)
 *_coeff*.csv
 *_coeff*.xlsx
