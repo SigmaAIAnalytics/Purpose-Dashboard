@@ -474,9 +474,6 @@ with st.sidebar:
             keys = coeff_df["Key"].dropna().tolist() if "Key" in coeff_df.columns else []
             st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
 
-            with st.expander("Available state keys"):
-                st.write(keys)
-
         except Exception as e:
             st.error(f"Failed to read coefficient file: {e}")
 
