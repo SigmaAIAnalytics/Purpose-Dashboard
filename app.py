@@ -962,9 +962,11 @@ if st.session_state.results_df is not None:
     st.divider()
     st.markdown("<div class='section-header'>📊 Predictions</div>", unsafe_allow_html=True)
 
-    # ── Warnings for missing coefficients ─────────────────────────────────────
+    # ── Warnings for missing coefficients (skip NaN/blank states) ───────────────
     if not fail_rows.empty:
         for _, r in fail_rows.iterrows():
+            if str(r["State"]).strip().lower() in ("nan", "none", ""):
+                continue
             st.warning(
                 f"⚠️ No coefficient found for state **{r['State']}** "
                 f"(Week {r['ISO Week']}) — skipped."
