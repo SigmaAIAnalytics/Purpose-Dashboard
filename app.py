@@ -192,7 +192,7 @@ def _safe_col(name: str) -> str:
 def _get_spaces_client():
     key    = os.environ.get("SPACES_KEY", "")
     secret = os.environ.get("SPACES_SECRET", "")
-    region = os.environ.get("SPACES_REGION", "lon1")
+    region = os.environ.get("SPACES_REGION", "lon1").lower().strip()
     bucket = os.environ.get("SPACES_BUCKET", "")
     if not (key and secret and bucket):
         return None, ""
