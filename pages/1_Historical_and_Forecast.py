@@ -234,14 +234,13 @@ _sel_dt  = _ff4.selectbox("Detail_Tactic", _dt_opts, index=_default_idx(_dt_opts
 _pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
 _sel_pf  = _ff5.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
 
-# ── Apply filters — "Overall" and "All" both mean no filter for that dimension ─
-_NO_FILTER = {"All", "Overall"}
+# ── Apply filters ─────────────────────────────────────────────────────────────
 filtered = df.copy()
-if _sel_st not in _NO_FILTER: filtered = filtered[filtered["State"]          == _sel_st]
-if _sel_ch not in _NO_FILTER: filtered = filtered[filtered["Channel"]        == _sel_ch]
-if _sel_ht not in _NO_FILTER: filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
-if _sel_dt not in _NO_FILTER: filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
-if _sel_pf not in _NO_FILTER: filtered = filtered[filtered["Product_Funded"] == _sel_pf]
+if _sel_st != "All": filtered = filtered[filtered["State"]          == _sel_st]
+if _sel_ch != "All": filtered = filtered[filtered["Channel"]        == _sel_ch]
+if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
+if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
+if _sel_pf != "All": filtered = filtered[filtered["Product_Funded"] == _sel_pf]
 
 # ── Aggregate to Year-Month-Type then chart ───────────────────────────────────
 if filtered.empty:
