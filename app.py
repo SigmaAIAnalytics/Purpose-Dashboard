@@ -296,10 +296,10 @@ def _load_comments() -> list:
         return []
 
 
-def _save_comments(comments: list) -> bool:
+def _save_comments(comments: list) -> tuple[bool, str]:
     client, bucket = _get_spaces_client()
     if client is None:
-        return False
+        return False, "Spaces client not configured"
     try:
         data = json.dumps(comments, indent=2, default=str).encode("utf-8")
         client.put_object(
@@ -309,9 +309,9 @@ def _save_comments(comments: list) -> bool:
             ContentType="application/json",
         )
         _load_comments.clear()
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 # ── Monthly → weekly spend conversion ────────────────────────────────────────
@@ -1150,8 +1150,11 @@ else:
                     for _x in _all_comments:
                         if _x["id"] == _c["id"]:
                             _x["resolved"] = True
-                    _save_comments(_all_comments)
-                    st.rerun()
+                    _ok, _err = _save_comments(_all_comments)
+                    if _ok:
+                        st.rerun()
+                    else:
+                        st.error(f"Could not save: {_err}")
     else:
         st.markdown(
             "<div style='color:var(--text-color);opacity:0.5;font-size:0.9rem'>"
@@ -1190,8 +1193,9 @@ else:
                     "page":      "Predictions",
                 }
                 _all_comments.append(_new)
-                if _save_comments(_all_comments):
+                _ok, _err = _save_comments(_all_comments)
+                if _ok:
                     st.success("Comment saved.")
                     st.rerun()
                 else:
-                    st.error("Could not save comment — check Spaces configuration.")
+                    st.error(f"Could not save comment: {_err}")
