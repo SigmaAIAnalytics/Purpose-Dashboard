@@ -937,13 +937,13 @@ if run_clicked:
                 apps   = results_df["raw_prediction"].clip(lower=0) * factors["APPLICATION_SHARE"].fillna(0).values
                 approv = apps * factors["APPROVAL_RATE"].fillna(0).values
                 orig   = apps * factors["ORIGINATION_RATE"].fillna(0).values
-                results_df[f"Applications_{pkey}"] = apps.round().astype(int)
-                results_df[f"Approvals_{pkey}"]    = approv.round().astype(int)
-                results_df[f"Originations_{pkey}"] = orig.round().astype(int)
+                results_df[f"Applications_{pkey}"] = apps.fillna(0).round().astype(int)
+                results_df[f"Approvals_{pkey}"]    = approv.fillna(0).round().astype(int)
+                results_df[f"Originations_{pkey}"] = orig.fillna(0).round().astype(int)
                 results_df["Allocated_Approved"]     += approv.fillna(0)
                 results_df["Allocated_Originations"] += orig.fillna(0)
-            results_df["Allocated_Approved"]     = results_df["Allocated_Approved"].round().astype(int)
-            results_df["Allocated_Originations"] = results_df["Allocated_Originations"].round().astype(int)
+            results_df["Allocated_Approved"]     = results_df["Allocated_Approved"].fillna(0).round().astype(int)
+            results_df["Allocated_Originations"] = results_df["Allocated_Originations"].fillna(0).round().astype(int)
 
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
