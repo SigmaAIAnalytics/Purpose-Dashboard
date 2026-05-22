@@ -179,14 +179,14 @@ for col in ["Applications", "Approvals", "Originations"]:
 
 for col in ["State", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded", "Type"]:
     if col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].astype(str).str.strip().replace("nan", "None")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
                7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
 
-_BLANKS = {"None", "nan", ""}
+_BLANKS = {""}
 
 def _opts(series: pd.Series) -> list[str]:
     return sorted(v for v in series.dropna().unique() if str(v) not in _BLANKS)
