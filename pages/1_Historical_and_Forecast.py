@@ -177,9 +177,13 @@ df["Month"] = df["Month"].astype(int)
 for col in ["Applications", "Approvals", "Originations"]:
     df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0.0)
 
+_OVERALL_COLS = {"Channel", "H_Tactic", "Detail_Tactic"}
+
 for col in ["State", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded", "Type"]:
     if col in df.columns:
         df[col] = df[col].astype(str).str.strip().replace("nan", "None")
+        if col in _OVERALL_COLS:
+            df[col] = df[col].replace("None", "Overall")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -190,6 +194,9 @@ _BLANKS = {""}
 
 def _opts(series: pd.Series) -> list[str]:
     return sorted(v for v in series.dropna().unique() if str(v) not in _BLANKS)
+
+def _default_idx(opts: list[str], preferred: str = "Overall") -> int:
+    return opts.index(preferred) if preferred in opts else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -213,13 +220,16 @@ _st_opts = ["All"] + _opts(df["State"])
 _sel_st  = _ff1.selectbox("State", _st_opts, key="hf_state")
 
 _ch_base = df if _sel_st == "All" else df[df["State"] == _sel_st]
-_sel_ch  = _ff2.selectbox("Channel", ["All"] + _opts(_ch_base["Channel"]), key="hf_channel")
+_ch_opts = ["All"] + _opts(_ch_base["Channel"])
+_sel_ch  = _ff2.selectbox("Channel", _ch_opts, index=_default_idx(_ch_opts), key="hf_channel")
 
 _ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
-_sel_ht  = _ff3.selectbox("H_Tactic", ["All"] + _opts(_ht_base["H_Tactic"]), key="hf_h_tactic")
+_ht_opts = ["All"] + _opts(_ht_base["H_Tactic"])
+_sel_ht  = _ff3.selectbox("H_Tactic", _ht_opts, index=_default_idx(_ht_opts), key="hf_h_tactic")
 
 _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
-_sel_dt  = _ff4.selectbox("Detail_Tactic", ["All"] + _opts(_dt_base["Detail_Tactic"]), key="hf_detail_tactic")
+_dt_opts = ["All"] + _opts(_dt_base["Detail_Tactic"])
+_sel_dt  = _ff4.selectbox("Detail_Tactic", _dt_opts, index=_default_idx(_dt_opts), key="hf_detail_tactic")
 
 _pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
 _sel_pf  = _ff5.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
