@@ -207,33 +207,26 @@ _metric = st.radio(
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Cascading filters ─────────────────────────────────────────────────────────
-_ff1, _ff2, _ff3, _ff4, _ff5, _ff6 = st.columns(6)
+_ff1, _ff2, _ff3, _ff4, _ff5 = st.columns(5)
 
 _st_opts = ["All"] + _opts(df["State"])
 _sel_st  = _ff1.selectbox("State", _st_opts, key="hf_state")
 
-_mo_base   = df if _sel_st == "All" else df[df["State"] == _sel_st]
-_mo_nums   = sorted(_mo_base["Month"].dropna().unique().astype(int).tolist())
-_mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
-_mo_map    = dict(zip(_mo_labels, _mo_nums))
-_sel_mo    = _ff2.selectbox("Month", ["All"] + _mo_labels, key="hf_month")
-
-_ch_base = _mo_base if _sel_mo == "All" else _mo_base[_mo_base["Month"] == _mo_map[_sel_mo]]
-_sel_ch  = _ff3.selectbox("Channel", ["All"] + _opts(_ch_base["Channel"]), key="hf_channel")
+_ch_base = df if _sel_st == "All" else df[df["State"] == _sel_st]
+_sel_ch  = _ff2.selectbox("Channel", ["All"] + _opts(_ch_base["Channel"]), key="hf_channel")
 
 _ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
-_sel_ht  = _ff4.selectbox("H_Tactic", ["All"] + _opts(_ht_base["H_Tactic"]), key="hf_h_tactic")
+_sel_ht  = _ff3.selectbox("H_Tactic", ["All"] + _opts(_ht_base["H_Tactic"]), key="hf_h_tactic")
 
 _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
-_sel_dt  = _ff5.selectbox("Detail_Tactic", ["All"] + _opts(_dt_base["Detail_Tactic"]), key="hf_detail_tactic")
+_sel_dt  = _ff4.selectbox("Detail_Tactic", ["All"] + _opts(_dt_base["Detail_Tactic"]), key="hf_detail_tactic")
 
 _pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
-_sel_pf  = _ff6.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
+_sel_pf  = _ff5.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
 filtered = df.copy()
 if _sel_st != "All": filtered = filtered[filtered["State"]          == _sel_st]
-if _sel_mo != "All": filtered = filtered[filtered["Month"]          == _mo_map[_sel_mo]]
 if _sel_ch != "All": filtered = filtered[filtered["Channel"]        == _sel_ch]
 if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
 if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
