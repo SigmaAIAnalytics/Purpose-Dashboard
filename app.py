@@ -188,6 +188,46 @@ def _safe_col(name: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in str(name)).strip("_")
 
 
+# ── Upload column aliases & normaliser ───────────────────────────────────────
+_UPLOAD_ALIASES: dict[str, str] = {
+    "date":             "Date",
+    "state":            "State",
+    "state_cd":         "State",
+    "dsp":              "DSP ($)",
+    "dsp ($)":          "DSP ($)",
+    "leadgen":          "LeadGen ($)",
+    "leadgen ($)":      "LeadGen ($)",
+    "lead gen":         "LeadGen ($)",
+    "lead gen ($)":     "LeadGen ($)",
+    "paid search":      "Paid Search ($)",
+    "paid search ($)":  "Paid Search ($)",
+    "paid social":      "Paid Social ($)",
+    "paid social ($)":  "Paid Social ($)",
+    "prescreen":        "Prescreen ($)",
+    "prescreen ($)":    "Prescreen ($)",
+    "referrals":        "Referrals ($)",
+    "referrals ($)":    "Referrals ($)",
+    "sweepstakes":      "Sweepstakes ($)",
+    "sweepstakes ($)":  "Sweepstakes ($)",
+}
+
+_REQUIRED_COLS = ["Date", "State"] + SPEND_COLUMNS
+
+
+def _normalise_upload(raw: pd.DataFrame) -> pd.DataFrame:
+    """Rename columns using alias map, fill missing spend cols with 0, coerce types."""
+    raw = raw.rename(columns={c: _UPLOAD_ALIASES.get(c.lower().strip(), c) for c in raw.columns})
+    missing = [c for c in _REQUIRED_COLS if c not in raw.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+    out = raw[_REQUIRED_COLS].copy()
+    out["Date"] = pd.to_datetime(out["Date"]).dt.date
+    out["State"] = out["State"].astype(str).str.strip().str.upper()
+    for col in SPEND_COLUMNS:
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    return out
+
+
 # ── DigitalOcean Spaces helpers ───────────────────────────────────────────────
 def _get_spaces_client():
     key    = os.environ.get("SPACES_KEY", "")
@@ -720,46 +760,6 @@ st.markdown(
     "Multiple rows for the same state + week are <strong>summed automatically</strong> before prediction.</div>",
     unsafe_allow_html=True,
 )
-
-# ── Column aliases for flexible upload parsing ────────────────────────────────
-_UPLOAD_ALIASES: dict[str, str] = {
-    "date":             "Date",
-    "state":            "State",
-    "state_cd":         "State",
-    "dsp":              "DSP ($)",
-    "dsp ($)":          "DSP ($)",
-    "leadgen":          "LeadGen ($)",
-    "leadgen ($)":      "LeadGen ($)",
-    "lead gen":         "LeadGen ($)",
-    "lead gen ($)":     "LeadGen ($)",
-    "paid search":      "Paid Search ($)",
-    "paid search ($)":  "Paid Search ($)",
-    "paid social":      "Paid Social ($)",
-    "paid social ($)":  "Paid Social ($)",
-    "prescreen":        "Prescreen ($)",
-    "prescreen ($)":    "Prescreen ($)",
-    "referrals":        "Referrals ($)",
-    "referrals ($)":    "Referrals ($)",
-    "sweepstakes":      "Sweepstakes ($)",
-    "sweepstakes ($)":  "Sweepstakes ($)",
-}
-
-_REQUIRED_COLS = ["Date", "State"] + SPEND_COLUMNS
-
-
-def _normalise_upload(raw: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns using alias map, fill missing spend cols with 0, coerce types."""
-    raw = raw.rename(columns={c: _UPLOAD_ALIASES.get(c.lower().strip(), c) for c in raw.columns})
-    missing = [c for c in _REQUIRED_COLS if c not in raw.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {', '.join(missing)}")
-    out = raw[_REQUIRED_COLS].copy()
-    out["Date"] = pd.to_datetime(out["Date"]).dt.date
-    out["State"] = out["State"].astype(str).str.strip().str.upper()
-    for col in SPEND_COLUMNS:
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
-    return out
-
 
 # ── Template download ─────────────────────────────────────────────────────────
 _template_df = pd.DataFrame(columns=_REQUIRED_COLS)
