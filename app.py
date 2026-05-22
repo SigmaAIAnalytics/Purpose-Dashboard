@@ -751,23 +751,6 @@ with st.sidebar:
             else:
                 st.info("No file uploaded yet.")
 
-    st.markdown("---")
-    with st.expander("🔧 Spaces diagnostics"):
-        region = os.environ.get("SPACES_REGION", "").lower().strip()
-        bucket = os.environ.get("SPACES_BUCKET", "")
-        st.markdown(f"**Region:** `{region or '(not set)'}`")
-        st.markdown(f"**Bucket:** `{bucket or '(not set)'}`")
-        st.markdown(f"**SPACES_KEY set:** `{'yes' if os.environ.get('SPACES_KEY') else 'no'}`")
-        st.markdown(f"**SPACES_SECRET set:** `{'yes' if os.environ.get('SPACES_SECRET') else 'no'}`")
-        st.markdown(f"**SPACES_COEFF_FILE:** `{os.environ.get('SPACES_COEFF_FILE', '(default)')}`")
-        st.markdown(f"**SPACES_PF_FILE:** `{os.environ.get('SPACES_PF_FILE', '(default)')}`")
-        st.markdown(f"**SPACES_SPEND_FILE:** `{os.environ.get('SPACES_SPEND_FILE', '(default)')}`")
-        if st.session_state.spaces_errors:
-            for k, msg in st.session_state.spaces_errors.items():
-                st.error(f"{k}: {msg}")
-        else:
-            st.success("No Spaces errors recorded")
-
     st.markdown(
         "<small style='color:var(--text-color);opacity:0.5'>"
         "Purpose Predictor v1.0<br>Replicates Excel Output_Data scoring logic</small>",
