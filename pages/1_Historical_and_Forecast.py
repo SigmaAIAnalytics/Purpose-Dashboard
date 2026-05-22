@@ -1,0 +1,341 @@
+"""Page 2: Historical actuals vs. forecast line chart."""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import load_df_from_spaces, render_comments_section
+
+st.set_page_config(
+    page_title="Historical & Forecast — Purpose Dashboard",
+    layout="wide",
+)
+
+# ── Custom CSS (matches app.py) ───────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600&display=swap');
+
+    html, body, .stApp, .stMarkdown, .stText,
+    p, li, td, th, input, textarea, select {
+        font-family: 'DM Sans', sans-serif !important;
+    }
+    h1, h2, h3, .section-header {
+        font-family: 'DM Serif Display', serif !important;
+    }
+    .stApp { background-color: var(--background-color); }
+    .block-container { padding-top: 2rem; }
+    p, li, td, th,
+    .stMarkdown p, .stMarkdown li,
+    [data-testid="stWidgetLabel"] p {
+        color: var(--text-color) !important;
+    }
+    section[data-testid="stSidebar"],
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] div,
+    section[data-testid="stSidebar"] label {
+        color: var(--text-color) !important;
+    }
+    .section-header {
+        font-size: 1.35rem;
+        color: var(--text-color) !important;
+        margin-bottom: 0.25rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 2px solid rgba(148, 163, 184, 0.4);
+    }
+    .stButton > button {
+        background: linear-gradient(90deg, #0ea5e9 0%, #6366f1 100%) !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 0.55rem 2rem !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+        transition: opacity 0.2s;
+    }
+    .stButton > button:hover { opacity: 0.84 !important; }
+    details summary,
+    details summary p,
+    .streamlit-expanderHeader p {
+        color: var(--text-color) !important;
+    }
+    [data-testid="stDataFrame"] * {
+        color: var(--text-color) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ── Session state ─────────────────────────────────────────────────────────────
+if "hist_df"     not in st.session_state: st.session_state.hist_df     = None
+if "hist_source" not in st.session_state: st.session_state.hist_source = None
+if "hist_error"  not in st.session_state: st.session_state.hist_error  = None
+
+# ── Auto-load from Spaces ─────────────────────────────────────────────────────
+if st.session_state.hist_df is None:
+    _df, _err = load_df_from_spaces("SPACES_HIST_FILE", "historical_forecast.csv")
+    if _df is not None:
+        st.session_state.hist_df     = _df
+        st.session_state.hist_source = "spaces"
+    elif _err:
+        st.session_state.hist_error  = _err
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## 📈 Data File")
+
+    if st.session_state.hist_source == "spaces":
+        st.success(f"✅ Auto-loaded from Spaces — {len(st.session_state.hist_df):,} rows")
+        with st.expander("Override with a local file"):
+            _ov = st.file_uploader(
+                "Upload historical_forecast.csv",
+                type=["csv"],
+                key="hist_uploader",
+            )
+            if _ov:
+                try:
+                    st.session_state.hist_df     = pd.read_csv(_ov)
+                    st.session_state.hist_source = "upload"
+                    st.success(f"✅ Overridden — {len(st.session_state.hist_df):,} rows")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
+    else:
+        st.markdown(
+            "Upload `historical_forecast.csv` produced by `build_historical_forecast.py`, "
+            "or set the `SPACES_HIST_FILE` env var to auto-load from Spaces."
+        )
+        _up = st.file_uploader(
+            "Upload historical_forecast.csv",
+            type=["csv"],
+            key="hist_uploader",
+        )
+        if _up:
+            try:
+                st.session_state.hist_df     = pd.read_csv(_up)
+                st.session_state.hist_source = "upload"
+                st.success(f"✅ Loaded — {len(st.session_state.hist_df):,} rows")
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
+        elif st.session_state.hist_df is not None:
+            st.success(f"✅ Loaded — {len(st.session_state.hist_df):,} rows")
+        else:
+            if st.session_state.hist_error:
+                st.error(f"Spaces error: {st.session_state.hist_error}")
+            else:
+                st.info("No file loaded.")
+
+    st.markdown("---")
+    with st.expander("🔧 Spaces diagnostics"):
+        region = os.environ.get("SPACES_REGION", "").lower().strip()
+        bucket = os.environ.get("SPACES_BUCKET", "")
+        st.markdown(f"**Region:** `{region or '(not set)'}`")
+        st.markdown(f"**Bucket:** `{bucket or '(not set)'}`")
+        st.markdown(f"**SPACES_KEY set:** `{'yes' if os.environ.get('SPACES_KEY') else 'no'}`")
+        st.markdown(f"**SPACES_SECRET set:** `{'yes' if os.environ.get('SPACES_SECRET') else 'no'}`")
+        st.markdown(f"**SPACES_HIST_FILE:** `{os.environ.get('SPACES_HIST_FILE', '(default: historical_forecast.csv)')}`")
+
+    st.markdown(
+        "<small style='color:var(--text-color);opacity:0.5'>"
+        "Purpose Predictor v1.0<br>Historical actuals + model forecast</small>",
+        unsafe_allow_html=True,
+    )
+
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown(
+    "<h1 style='font-family:DM Serif Display,serif;font-size:2.1rem;margin-bottom:0;"
+    "color:var(--text-color)'>Historical & Forecast</h1>"
+    "<p style='color:var(--text-color);opacity:0.55;margin-top:0.1rem'>"
+    "Actuals vs. predictions by state, channel, and product</p>",
+    unsafe_allow_html=True,
+)
+st.divider()
+
+if st.session_state.hist_df is None:
+    st.info("Upload `historical_forecast.csv` using the sidebar to get started.")
+    render_comments_section("Historical and Forecast")
+    st.stop()
+
+# ── Coerce types ──────────────────────────────────────────────────────────────
+df = st.session_state.hist_df.copy()
+
+for col in ["Year", "Month"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+df = df.dropna(subset=["Year", "Month"])
+df["Year"]  = df["Year"].astype(int)
+df["Month"] = df["Month"].astype(int)
+
+for col in ["Applications", "Approvals", "Originations"]:
+    df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0.0)
+
+for col in ["State", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded", "Type"]:
+    if col in df.columns:
+        df[col] = df[col].astype(str).str.strip()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+_MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+               7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
+
+_BLANKS = {"None", "nan", ""}
+
+def _opts(series: pd.Series) -> list[str]:
+    return sorted(v for v in series.dropna().unique() if str(v) not in _BLANKS)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 1 — Filters + chart
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("<div class='section-header'>📊 Chart</div>", unsafe_allow_html=True)
+
+_metric = st.radio(
+    "Metric",
+    ["Applications", "Approvals", "Originations"],
+    horizontal=True,
+    key="metric_selector",
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── Cascading filters ─────────────────────────────────────────────────────────
+_ff1, _ff2, _ff3, _ff4, _ff5, _ff6 = st.columns(6)
+
+_st_opts = ["All"] + _opts(df["State"])
+_sel_st  = _ff1.selectbox("State", _st_opts, key="hf_state")
+
+_mo_base   = df if _sel_st == "All" else df[df["State"] == _sel_st]
+_mo_nums   = sorted(_mo_base["Month"].dropna().unique().astype(int).tolist())
+_mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
+_mo_map    = dict(zip(_mo_labels, _mo_nums))
+_sel_mo    = _ff2.selectbox("Month", ["All"] + _mo_labels, key="hf_month")
+
+_ch_base = _mo_base if _sel_mo == "All" else _mo_base[_mo_base["Month"] == _mo_map[_sel_mo]]
+_sel_ch  = _ff3.selectbox("Channel", ["All"] + _opts(_ch_base["Channel"]), key="hf_channel")
+
+_ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
+_sel_ht  = _ff4.selectbox("H_Tactic", ["All"] + _opts(_ht_base["H_Tactic"]), key="hf_h_tactic")
+
+_dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
+_sel_dt  = _ff5.selectbox("Detail_Tactic", ["All"] + _opts(_dt_base["Detail_Tactic"]), key="hf_detail_tactic")
+
+_pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
+_sel_pf  = _ff6.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
+
+# ── Apply filters ─────────────────────────────────────────────────────────────
+filtered = df.copy()
+if _sel_st != "All": filtered = filtered[filtered["State"]          == _sel_st]
+if _sel_mo != "All": filtered = filtered[filtered["Month"]          == _mo_map[_sel_mo]]
+if _sel_ch != "All": filtered = filtered[filtered["Channel"]        == _sel_ch]
+if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
+if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
+if _sel_pf != "All": filtered = filtered[filtered["Product_Funded"] == _sel_pf]
+
+# ── Aggregate to Year-Month-Type then chart ───────────────────────────────────
+if filtered.empty:
+    st.info("No rows match the selected filters.")
+else:
+    chart_df = (
+        filtered
+        .groupby(["Year", "Month", "Type"], as_index=False)[_metric]
+        .sum()
+    )
+    chart_df["Period"] = chart_df.apply(
+        lambda r: f"{int(r['Year'])}-{_MONTH_NAME.get(int(r['Month']), str(int(r['Month'])))}",
+        axis=1,
+    )
+    chart_df["_sort"] = chart_df["Year"] * 100 + chart_df["Month"]
+    chart_df = chart_df.sort_values("_sort")
+
+    seen: set[str] = set()
+    period_order: list[str] = []
+    for p in chart_df["Period"]:
+        if p not in seen:
+            seen.add(p)
+            period_order.append(p)
+
+    base = alt.Chart(chart_df).encode(
+        x=alt.X(
+            "Period:N",
+            sort=period_order,
+            axis=alt.Axis(labelAngle=-35, title=""),
+        ),
+        y=alt.Y(
+            f"{_metric}:Q",
+            axis=alt.Axis(title=_metric, format=","),
+        ),
+        color=alt.Color(
+            "Type:N",
+            scale=alt.Scale(
+                domain=["Actual", "Forecast"],
+                range=["#0ea5e9", "#f97316"],
+            ),
+            legend=alt.Legend(title=""),
+        ),
+        tooltip=[
+            alt.Tooltip("Period:N"),
+            alt.Tooltip("Type:N"),
+            alt.Tooltip(f"{_metric}:Q", format=","),
+        ],
+    )
+
+    actual_layer = (
+        base
+        .transform_filter(alt.datum.Type == "Actual")
+        .mark_line(strokeWidth=2.5, point=True)
+    )
+
+    forecast_layer = (
+        base
+        .transform_filter(alt.datum.Type == "Forecast")
+        .mark_line(strokeWidth=2.5, point=True, strokeDash=[6, 3])
+    )
+
+    chart = (
+        (actual_layer + forecast_layer)
+        .properties(height=380)
+        .configure_axis(
+            labelColor="#94a3b8",
+            titleColor="#94a3b8",
+            gridColor="rgba(148,163,184,0.15)",
+        )
+        .configure_view(strokeWidth=0)
+        .configure_legend(labelColor="#94a3b8", titleColor="#94a3b8")
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+    # ── Underlying data table ─────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("View underlying data"):
+        pivot = (
+            chart_df[["Period", "Type", _metric, "_sort"]]
+            .pivot_table(
+                index=["Period", "_sort"],
+                columns="Type",
+                values=_metric,
+                aggfunc="sum",
+            )
+            .reset_index()
+            .sort_values("_sort")
+            .drop(columns=["_sort"])
+            .rename_axis(None, axis=1)
+        )
+        fmt = {c: "{:,.0f}" for c in ["Actual", "Forecast"] if c in pivot.columns}
+        st.dataframe(
+            pivot.style.format(fmt, na_rep=""),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ── Comments ──────────────────────────────────────────────────────────────────
+render_comments_section("Historical and Forecast")
