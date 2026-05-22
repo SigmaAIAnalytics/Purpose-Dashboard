@@ -168,11 +168,11 @@ if st.session_state.hist_df is None:
 # ── Coerce types ──────────────────────────────────────────────────────────────
 df = st.session_state.hist_df.copy()
 
-for col in ["Year", "Month"]:
+for col in ["ISO_Year", "ISO_Week"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
-df = df.dropna(subset=["Year", "Month"])
-df["Year"]  = df["Year"].astype(int)
-df["Month"] = df["Month"].astype(int)
+df = df.dropna(subset=["ISO_Year", "ISO_Week"])
+df["ISO_Year"] = df["ISO_Year"].astype(int)
+df["ISO_Week"] = df["ISO_Week"].astype(int)
 
 for col in ["Applications", "Approvals", "Originations"]:
     df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0.0)
@@ -187,9 +187,6 @@ for col in ["State", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded", "
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-_MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
-               7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
-
 _BLANKS = {""}
 
 def _opts(series: pd.Series) -> list[str]:
@@ -243,15 +240,15 @@ if filtered.empty:
 else:
     chart_df = (
         filtered
-        .groupby(["Year", "Month", "Type"], as_index=False)
+        .groupby(["ISO_Year", "ISO_Week", "Type"], as_index=False)
         [["Applications", "Approvals", "Originations"]]
         .sum()
     )
     chart_df["Period"] = chart_df.apply(
-        lambda r: f"{int(r['Year'])}-{_MONTH_NAME.get(int(r['Month']), str(int(r['Month'])))}",
+        lambda r: f"W{int(r['ISO_Week'])} {int(r['ISO_Year'])}",
         axis=1,
     )
-    chart_df["_sort"] = chart_df["Year"] * 100 + chart_df["Month"]
+    chart_df["_sort"] = chart_df["ISO_Year"] * 100 + chart_df["ISO_Week"]
     chart_df = chart_df.sort_values("_sort").reset_index(drop=True)
 
     actual_df   = chart_df[chart_df["Type"] == "Actual"].reset_index(drop=True)

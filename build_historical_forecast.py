@@ -41,7 +41,6 @@ from build_state_division_models import (
     apply_product_allocation_to_forecast,
     format_predicted_apps,
     load_tabular_input,
-    roll_up_weekly_forecast_to_monthly,
     safe_name,
     score_spend_with_coefficients,
     spread_monthly_spend_to_weekly,
@@ -62,7 +61,7 @@ _MONTHLY_TACTICS = ["Prescreen"]
 
 # ── Output column order ───────────────────────────────────────────────────────
 _OUTPUT_COLS = [
-    "Type", "State", "Year", "Month",
+    "Type", "State", "ISO_Year", "ISO_Week",
     "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded",
     "Applications", "Approvals", "Originations",
 ]
@@ -141,7 +140,7 @@ def extract_actuals(history_path: str, n_months: int) -> pd.DataFrame:
 
     df["State"] = df[STATE_COL].astype(str)
 
-    group_cols = ["State", "_year", "_month", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded"]
+    group_cols = ["State", YEAR_COL, WEEK_COL, "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded"]
     agg = (
         df.groupby(group_cols, as_index=False, dropna=False)
         .agg(
@@ -149,7 +148,7 @@ def extract_actuals(history_path: str, n_months: int) -> pd.DataFrame:
             Approvals=("APPROVED",       "sum"),
             Originations=("ORIGINATIONS", "sum"),
         )
-        .rename(columns={"_year": "Year", "_month": "Month"})
+        .rename(columns={YEAR_COL: "ISO_Year", WEEK_COL: "ISO_Week"})
     )
     agg["Type"] = "Actual"
     return agg
@@ -240,18 +239,13 @@ def score_forecast(
         "Predicted_APPS":      "Predicted APPS",
     })
 
-    # Apply product allocation before rolling up
+    # Apply product allocation (adds APPLICATIONS_{label} etc. at weekly grain)
     if not product_factors_df.empty:
         preds = apply_product_allocation_to_forecast(preds, product_factors_df)
 
-    monthly = roll_up_weekly_forecast_to_monthly(preds)
-    if monthly.empty:
-        print("  Warning: monthly rollup produced no rows.")
-        return pd.DataFrame()
+    id_cols = [c for c in ["State", "ISO_Year", "ISO_Week", "Channel", "H_Tactic", "Detail_Tactic"] if c in preds.columns]
 
-    id_cols = [c for c in ["State", "Calendar_Year", "Calendar_Month", "Channel", "H_Tactic", "Detail_Tactic"] if c in monthly.columns]
-
-    # Reshape to long format: one row per (grain × product)
+    # Reshape to long format: one row per (weekly grain × product)
     if not product_factors_df.empty:
         product_names = sorted(product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique())
         frames = []
@@ -260,26 +254,25 @@ def score_forecast(
             apps_col  = f"APPLICATIONS_{label}"
             appr_col  = f"APPROVAL_{label}"
             orig_col  = f"ORIGINATIONS_{label}"
-            if apps_col not in monthly.columns:
+            if apps_col not in preds.columns:
                 continue
-            sub = monthly[id_cols].copy()
+            sub = preds[id_cols].copy()
             sub["Product_Funded"] = prod_name
-            sub["Applications"]   = monthly[apps_col].fillna(0).apply(format_predicted_apps)
-            sub["Approvals"]      = monthly.get(appr_col,  pd.Series(0, index=monthly.index)).fillna(0).apply(format_predicted_apps)
-            sub["Originations"]   = monthly.get(orig_col,  pd.Series(0, index=monthly.index)).fillna(0).apply(format_predicted_apps)
+            sub["Applications"]   = preds[apps_col].fillna(0).apply(format_predicted_apps)
+            sub["Approvals"]      = preds.get(appr_col,  pd.Series(0, index=preds.index)).fillna(0).apply(format_predicted_apps)
+            sub["Originations"]   = preds.get(orig_col,  pd.Series(0, index=preds.index)).fillna(0).apply(format_predicted_apps)
             frames.append(sub)
         result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     else:
-        result = monthly[id_cols].copy()
+        result = preds[id_cols].copy()
         result["Product_Funded"] = None
-        result["Applications"]   = monthly["Allocated_Predicted_APPS"].apply(format_predicted_apps)
-        result["Approvals"]      = monthly.get("Allocated_Approved",     pd.Series(0, index=monthly.index)).fillna(0).apply(format_predicted_apps)
-        result["Originations"]   = monthly.get("Allocated_Originations", pd.Series(0, index=monthly.index)).fillna(0).apply(format_predicted_apps)
+        result["Applications"]   = preds["Predicted APPS"].apply(format_predicted_apps)
+        result["Approvals"]      = pd.Series(0, index=preds.index)
+        result["Originations"]   = pd.Series(0, index=preds.index)
 
     if result.empty:
         return pd.DataFrame()
 
-    result = result.rename(columns={"Calendar_Year": "Year", "Calendar_Month": "Month"})
     result["Type"] = "Forecast"
     return result
 
@@ -307,7 +300,7 @@ def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
                 grp[col] = pd.to_numeric(grp[col], errors="coerce").fillna(0)
 
         agg = (
-            grp.groupby(["State", "Year", "Month"], as_index=False)
+            grp.groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
             [["Applications", "Approvals", "Originations"]]
             .sum()
         )
@@ -372,7 +365,7 @@ def build_historical_forecast(
     present  = [c for c in _OUTPUT_COLS if c in combined.columns]
     combined = (
         combined[present]
-        .sort_values(["State", "Type", "Year", "Month"])
+        .sort_values(["State", "Type", "ISO_Year", "ISO_Week"])
         .reset_index(drop=True)
     )
 
