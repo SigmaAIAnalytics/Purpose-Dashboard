@@ -211,11 +211,15 @@ def _load_df_from_spaces(
     file_env_var: str,
     default_filename: str,
     excel_sheet: str | None = None,
-) -> pd.DataFrame | None:
-    """Fetch a CSV or Excel file from DO Spaces. Returns None if unconfigured or missing."""
+) -> tuple[pd.DataFrame | None, str]:
+    """Fetch a CSV or Excel file from DO Spaces. Returns (df, error_message)."""
     client, bucket = _get_spaces_client()
     if client is None:
-        return None
+        key    = os.environ.get("SPACES_KEY", "")
+        secret = os.environ.get("SPACES_SECRET", "")
+        bkt    = os.environ.get("SPACES_BUCKET", "")
+        missing = [n for n, v in [("SPACES_KEY", key), ("SPACES_SECRET", secret), ("SPACES_BUCKET", bkt)] if not v]
+        return None, f"Missing env vars: {', '.join(missing)}"
     filename = os.environ.get(file_env_var, default_filename)
     try:
         obj  = client.get_object(Bucket=bucket, Key=filename)
@@ -227,10 +231,10 @@ def _load_df_from_spaces(
                 if excel_sheet and excel_sheet in xl.sheet_names
                 else xl.sheet_names[0]
             )
-            return xl.parse(sheet)
-        return pd.read_csv(BytesIO(data))
-    except Exception:
-        return None
+            return xl.parse(sheet), ""
+        return pd.read_csv(BytesIO(data)), ""
+    except Exception as e:
+        return None, f"{filename}: {e}"
 
 
 # ── Monthly → weekly spend conversion ────────────────────────────────────────
@@ -493,33 +497,43 @@ if "upload_df"         not in st.session_state: st.session_state.upload_df      
 if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
 if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
 if "spend_source"      not in st.session_state: st.session_state.spend_source      = None
+if "spaces_errors"     not in st.session_state: st.session_state.spaces_errors     = {}
 
 # ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
 if st.session_state.coeff_df is None:
-    _spaces_coeff = _load_df_from_spaces(
+    _spaces_coeff, _err = _load_df_from_spaces(
         "SPACES_COEFF_FILE", "model_coefficients.csv", excel_sheet="MODEL_Coefficients"
     )
     if _spaces_coeff is not None:
         st.session_state.coeff_df     = _spaces_coeff
         st.session_state.coeff_source = "spaces"
+        st.session_state.spaces_errors.pop("coeff", None)
+    elif _err:
+        st.session_state.spaces_errors["coeff"] = _err
 
 if st.session_state.product_factors_df is None:
-    _spaces_pf = _load_df_from_spaces("SPACES_PF_FILE", "product_factors.csv")
+    _spaces_pf, _err = _load_df_from_spaces("SPACES_PF_FILE", "product_factors.csv")
     if _spaces_pf is not None:
         _pf_required = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
         if _pf_required.issubset(set(_spaces_pf.columns)):
             st.session_state.product_factors_df = _spaces_pf
             st.session_state.pf_source           = "spaces"
+            st.session_state.spaces_errors.pop("pf", None)
+    elif _err:
+        st.session_state.spaces_errors["pf"] = _err
 
 if st.session_state.upload_df is None:
-    _spaces_spend = _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
+    _spaces_spend, _err = _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
     if _spaces_spend is not None:
         try:
             st.session_state.upload_df    = _normalise_upload(_spaces_spend)
             st.session_state.spend_source = "spaces"
             st.session_state.upload_version += 1
-        except Exception:
-            pass
+            st.session_state.spaces_errors.pop("spend", None)
+        except Exception as e:
+            st.session_state.spaces_errors["spend"] = f"FutureSpend.csv parsed but normalise failed: {e}"
+    elif _err:
+        st.session_state.spaces_errors["spend"] = _err
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -661,6 +675,22 @@ with st.sidebar:
                 st.info("No file uploaded yet.")
 
     st.markdown("---")
+    with st.expander("🔧 Spaces diagnostics"):
+        region = os.environ.get("SPACES_REGION", "").lower().strip()
+        bucket = os.environ.get("SPACES_BUCKET", "")
+        st.markdown(f"**Region:** `{region or '(not set)'}`")
+        st.markdown(f"**Bucket:** `{bucket or '(not set)'}`")
+        st.markdown(f"**SPACES_KEY set:** `{'yes' if os.environ.get('SPACES_KEY') else 'no'}`")
+        st.markdown(f"**SPACES_SECRET set:** `{'yes' if os.environ.get('SPACES_SECRET') else 'no'}`")
+        st.markdown(f"**SPACES_COEFF_FILE:** `{os.environ.get('SPACES_COEFF_FILE', '(default)')}`")
+        st.markdown(f"**SPACES_PF_FILE:** `{os.environ.get('SPACES_PF_FILE', '(default)')}`")
+        st.markdown(f"**SPACES_SPEND_FILE:** `{os.environ.get('SPACES_SPEND_FILE', '(default)')}`")
+        if st.session_state.spaces_errors:
+            for k, msg in st.session_state.spaces_errors.items():
+                st.error(f"{k}: {msg}")
+        else:
+            st.success("No Spaces errors recorded")
+
     st.markdown(
         "<small style='color:var(--text-color);opacity:0.5'>"
         "Purpose Predictor v1.0<br>Replicates Excel Output_Data scoring logic</small>",
