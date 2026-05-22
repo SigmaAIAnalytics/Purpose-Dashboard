@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import uuid
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any
@@ -275,6 +277,41 @@ def _load_df_from_spaces(
         return pd.read_csv(BytesIO(data)), ""
     except Exception as e:
         return None, f"{filename}: {e}"
+
+
+# ── Comments helpers ──────────────────────────────────────────────────────────
+def _comments_key() -> str:
+    return os.environ.get("SPACES_COMMENTS_FILE", "comments.json")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_comments() -> list:
+    client, bucket = _get_spaces_client()
+    if client is None:
+        return []
+    try:
+        obj = client.get_object(Bucket=bucket, Key=_comments_key())
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception:
+        return []
+
+
+def _save_comments(comments: list) -> bool:
+    client, bucket = _get_spaces_client()
+    if client is None:
+        return False
+    try:
+        data = json.dumps(comments, indent=2, default=str).encode("utf-8")
+        client.put_object(
+            Bucket=bucket,
+            Key=_comments_key(),
+            Body=data,
+            ContentType="application/json",
+        )
+        _load_comments.clear()
+        return True
+    except Exception:
+        return False
 
 
 # ── Monthly → weekly spend conversion ────────────────────────────────────────
@@ -1075,3 +1112,86 @@ if st.session_state.results_df is not None:
             file_name=f"predictions_{ts}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 3 — Comments
+# ══════════════════════════════════════════════════════════════════════════════
+st.divider()
+st.markdown("<div class='section-header'>💬 Comments</div>", unsafe_allow_html=True)
+
+_spaces_configured = bool(
+    os.environ.get("SPACES_KEY") and
+    os.environ.get("SPACES_SECRET") and
+    os.environ.get("SPACES_BUCKET")
+)
+
+if not _spaces_configured:
+    st.info("Comments require Spaces to be configured.")
+else:
+    _all_comments = _load_comments()
+    _open_comments     = [c for c in _all_comments if not c.get("resolved", False)]
+    _resolved_comments = [c for c in _all_comments if c.get("resolved", False)]
+
+    # ── Open comments ─────────────────────────────────────────────────────────
+    if _open_comments:
+        for _c in _open_comments:
+            _cc1, _cc2 = st.columns([11, 1])
+            with _cc1:
+                st.markdown(
+                    f"**{_c['author']}** "
+                    f"<span style='color:var(--text-color);opacity:0.45;font-size:0.82rem'>"
+                    f"{_c['timestamp'][:16].replace('T', ' ')}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(_c["text"])
+            with _cc2:
+                if st.button("✓", key=f"resolve_{_c['id']}", help="Mark resolved"):
+                    for _x in _all_comments:
+                        if _x["id"] == _c["id"]:
+                            _x["resolved"] = True
+                    _save_comments(_all_comments)
+                    st.rerun()
+    else:
+        st.markdown(
+            "<div style='color:var(--text-color);opacity:0.5;font-size:0.9rem'>"
+            "No open comments.</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Resolved comments (collapsed) ────────────────────────────────────────
+    if _resolved_comments:
+        with st.expander(f"Resolved ({len(_resolved_comments)})"):
+            for _c in _resolved_comments:
+                st.markdown(
+                    f"~~**{_c['author']}**~~ "
+                    f"<span style='color:var(--text-color);opacity:0.4;font-size:0.82rem'>"
+                    f"{_c['timestamp'][:16].replace('T', ' ')}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"~~{_c['text']}~~")
+
+    # ── New comment form ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.form("comment_form", clear_on_submit=True):
+        _name = st.text_input("Your name")
+        _text = st.text_area("Comment", height=100)
+        _submitted = st.form_submit_button("Submit comment")
+        if _submitted:
+            if not _name.strip() or not _text.strip():
+                st.warning("Please enter both your name and a comment.")
+            else:
+                _new = {
+                    "id":        str(uuid.uuid4()),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "author":    _name.strip(),
+                    "text":      _text.strip(),
+                    "resolved":  False,
+                    "page":      "Predictions",
+                }
+                _all_comments.append(_new)
+                if _save_comments(_all_comments):
+                    st.success("Comment saved.")
+                    st.rerun()
+                else:
+                    st.error("Could not save comment — check Spaces configuration.")
