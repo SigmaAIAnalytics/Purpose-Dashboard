@@ -286,6 +286,43 @@ def score_forecast(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each Type (Actual / Forecast), add a state-level aggregate row where
+    Channel, H_Tactic, Detail_Tactic, and Product_Funded are null.
+
+    These are the rows the dashboard shows when the user selects 'Overall' in
+    the dimension dropdowns. Only added when no null-Channel rows of that Type
+    already exist (e.g. if the model already produced state-level predictions).
+    """
+    rollups = []
+    for type_val, grp in combined.groupby("Type"):
+        null_channel = grp["Channel"].isna() | grp["Channel"].astype(str).str.strip().isin({"None", "nan", ""})
+        if null_channel.any():
+            continue  # state-level rows already present — don't duplicate
+
+        grp = grp.copy()
+        for col in ["Applications", "Approvals", "Originations"]:
+            if col in grp.columns:
+                grp[col] = pd.to_numeric(grp[col], errors="coerce").fillna(0)
+
+        agg = (
+            grp.groupby(["State", "Year", "Month"], as_index=False)
+            [["Applications", "Approvals", "Originations"]]
+            .sum()
+        )
+        agg["Type"]           = type_val
+        agg["Channel"]        = None
+        agg["H_Tactic"]       = None
+        agg["Detail_Tactic"]  = None
+        agg["Product_Funded"] = None
+        rollups.append(agg)
+
+    if not rollups:
+        return combined
+    return pd.concat([combined] + rollups, ignore_index=True)
+
+
 def build_historical_forecast(
     history_path: str,
     future_spend_path: str,
@@ -331,6 +368,7 @@ def build_historical_forecast(
         return pd.DataFrame()
 
     combined = pd.concat([actuals, forecast], ignore_index=True)
+    combined = _add_state_rollup(combined)
     present  = [c for c in _OUTPUT_COLS if c in combined.columns]
     combined = (
         combined[present]
