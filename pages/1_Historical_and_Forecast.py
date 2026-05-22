@@ -5,8 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -202,15 +202,10 @@ def _default_idx(opts: list[str], preferred: str = "Overall") -> int:
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — Filters + chart
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("<div class='section-header'>📊 Chart</div>", unsafe_allow_html=True)
-
-_metric = st.radio(
-    "Metric",
-    ["Applications", "Approvals", "Originations"],
-    horizontal=True,
-    key="metric_selector",
+st.markdown(
+    "<div class='section-header'>📈 Applications · Approvals · Originations — Actuals + Forecast</div>",
+    unsafe_allow_html=True,
 )
-
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Cascading filters ─────────────────────────────────────────────────────────
@@ -242,13 +237,14 @@ if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
 if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
 if _sel_pf != "All": filtered = filtered[filtered["Product_Funded"] == _sel_pf]
 
-# ── Aggregate to Year-Month-Type then chart ───────────────────────────────────
+# ── Aggregate to Year-Month-Type ──────────────────────────────────────────────
 if filtered.empty:
     st.info("No rows match the selected filters.")
 else:
     chart_df = (
         filtered
-        .groupby(["Year", "Month", "Type"], as_index=False)[_metric]
+        .groupby(["Year", "Month", "Type"], as_index=False)
+        [["Applications", "Approvals", "Originations"]]
         .sum()
     )
     chart_df["Period"] = chart_df.apply(
@@ -256,85 +252,124 @@ else:
         axis=1,
     )
     chart_df["_sort"] = chart_df["Year"] * 100 + chart_df["Month"]
-    chart_df = chart_df.sort_values("_sort")
+    chart_df = chart_df.sort_values("_sort").reset_index(drop=True)
 
-    seen: set[str] = set()
-    period_order: list[str] = []
-    for p in chart_df["Period"]:
-        if p not in seen:
-            seen.add(p)
-            period_order.append(p)
+    actual_df   = chart_df[chart_df["Type"] == "Actual"].reset_index(drop=True)
+    forecast_df = chart_df[chart_df["Type"] == "Forecast"].reset_index(drop=True)
 
-    base = alt.Chart(chart_df).encode(
-        x=alt.X(
-            "Period:N",
-            sort=period_order,
-            axis=alt.Axis(labelAngle=-35, title=""),
-        ),
-        y=alt.Y(
-            f"{_metric}:Q",
-            axis=alt.Axis(title=_metric, format=","),
-        ),
-        color=alt.Color(
-            "Type:N",
-            scale=alt.Scale(
-                domain=["Actual", "Forecast"],
-                range=["#0ea5e9", "#f97316"],
-            ),
-            legend=alt.Legend(title=""),
-        ),
-        tooltip=[
-            alt.Tooltip("Period:N"),
-            alt.Tooltip("Type:N"),
-            alt.Tooltip(f"{_metric}:Q", format=","),
-        ],
-    )
+    # ── Plotly chart ──────────────────────────────────────────────────────────
+    METRIC_COLOR = {
+        "Applications": "#0369a1",
+        "Approvals":    "#0f766e",
+        "Originations": "#7c3aed",
+    }
 
-    actual_layer = (
-        base
-        .transform_filter(alt.datum.Type == "Actual")
-        .mark_line(strokeWidth=2.5, point=True)
-    )
+    fig = go.Figure()
 
-    forecast_layer = (
-        base
-        .transform_filter(alt.datum.Type == "Forecast")
-        .mark_line(strokeWidth=2.5, point=True, strokeDash=[6, 3])
-    )
+    for metric, color in METRIC_COLOR.items():
+        has_actual   = not actual_df.empty   and actual_df[metric].sum()   > 0
+        has_forecast = not forecast_df.empty and forecast_df[metric].sum() > 0
 
-    chart = (
-        (actual_layer + forecast_layer)
-        .properties(height=380)
-        .configure_axis(
-            labelColor="#94a3b8",
-            titleColor="#94a3b8",
-            gridColor="rgba(148,163,184,0.15)",
+        if not has_actual and not has_forecast:
+            continue
+
+        # Actual trace — solid line
+        if has_actual:
+            fig.add_trace(go.Scatter(
+                x=actual_df["Period"],
+                y=actual_df[metric],
+                name=f"Actual {metric}",
+                mode="lines+markers",
+                line=dict(color=color, width=2.5),
+                marker=dict(size=5, color=color),
+                hovertemplate=f"<b>%{{x}}</b><br>Actual {metric}: %{{y:,.0f}}<extra></extra>",
+            ))
+
+        # Forecast trace — dotted, bridged from last actual point
+        if has_forecast:
+            if has_actual:
+                bridge_x = [actual_df["Period"].iloc[-1]] + forecast_df["Period"].tolist()
+                bridge_y = [float(actual_df[metric].iloc[-1])] + forecast_df[metric].tolist()
+            else:
+                bridge_x = forecast_df["Period"].tolist()
+                bridge_y = forecast_df[metric].tolist()
+
+            fig.add_trace(go.Scatter(
+                x=bridge_x,
+                y=bridge_y,
+                name=f"Forecast {metric}",
+                mode="lines+markers",
+                line=dict(color=color, width=2.5, dash="dot"),
+                marker=dict(size=5, symbol="circle", color=color,
+                            line=dict(color="#ffffff", width=1)),
+                hovertemplate=f"<b>%{{x}}</b><br>Forecast {metric}: %{{y:,.0f}}<extra></extra>",
+            ))
+
+    # Vertical separator at actual/forecast boundary
+    if not actual_df.empty and not forecast_df.empty:
+        _boundary = actual_df["Period"].iloc[-1]
+        fig.add_shape(
+            type="line", xref="x", yref="paper",
+            x0=_boundary, x1=_boundary, y0=0, y1=1,
+            line=dict(dash="dot", color="#94a3b8", width=1),
         )
-        .configure_view(strokeWidth=0)
-        .configure_legend(labelColor="#94a3b8", titleColor="#94a3b8")
+        fig.add_annotation(
+            xref="x", yref="paper",
+            x=_boundary, y=1.03,
+            text="◀ Actual   Forecast ▶",
+            showarrow=False,
+            font=dict(color="#64748b", size=10),
+            xanchor="center",
+        )
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Sans, Arial", size=12, color="#94a3b8"),
+        xaxis=dict(
+            gridcolor="rgba(148,163,184,0.15)",
+            linecolor="#94a3b8",
+            tickangle=-35,
+            tickfont=dict(color="#94a3b8", size=10),
+        ),
+        yaxis=dict(
+            gridcolor="rgba(148,163,184,0.15)",
+            linecolor="#94a3b8",
+            rangemode="tozero",
+            tickfont=dict(color="#94a3b8", size=11),
+            title="Count",
+            title_font=dict(color="#94a3b8", size=12),
+            tickformat=",",
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            bordercolor="rgba(148,163,184,0.3)",
+            borderwidth=1,
+            font=dict(color="#94a3b8", size=11),
+            orientation="h",
+            yanchor="bottom", y=1.05,
+            xanchor="left",   x=0,
+        ),
+        height=460,
+        margin=dict(l=60, r=20, t=80, b=70),
+        hoverlabel=dict(bgcolor="#1e293b", font_color="#f1f5f9", font_size=12),
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
     # ── Underlying data table ─────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("View underlying data"):
-        pivot = (
-            chart_df[["Period", "Type", _metric, "_sort"]]
-            .pivot_table(
-                index=["Period", "_sort"],
-                columns="Type",
-                values=_metric,
-                aggfunc="sum",
-            )
-            .reset_index()
-            .sort_values("_sort")
+        _metrics_present = [m for m in ["Applications", "Approvals", "Originations"]
+                            if chart_df[m].sum() > 0]
+        tbl = (
+            chart_df[["Period", "Type", "_sort"] + _metrics_present]
+            .sort_values(["_sort", "Type"])
             .drop(columns=["_sort"])
-            .rename_axis(None, axis=1)
         )
-        fmt = {c: "{:,.0f}" for c in ["Actual", "Forecast"] if c in pivot.columns}
+        fmt = {m: "{:,.0f}" for m in _metrics_present}
         st.dataframe(
-            pivot.style.format(fmt, na_rep=""),
+            tbl.style.format(fmt, na_rep=""),
             use_container_width=True,
             hide_index=True,
         )
