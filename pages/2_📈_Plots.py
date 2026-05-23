@@ -218,8 +218,10 @@ _ff1, _ff2, _ff3, _ff4, _ff5 = st.columns(5)
 
 _sel_st = _ff1.multiselect("State", _opts(df["State"]), key="hf_state", placeholder="All states")
 
-_ch_base = df if not _sel_st else df[df["State"].isin(_sel_st)]
-_sel_ch  = _ff2.multiselect("Channel", _opts(_ch_base["Channel"]), key="hf_channel", placeholder="All channels")
+_ch_base    = df if not _sel_st else df[df["State"].isin(_sel_st)]
+_ch_options = _opts(_ch_base["Channel"])
+_ch_default = ["Overall"] if "Overall" in _ch_options else []
+_sel_ch     = _ff2.multiselect("Channel", _ch_options, default=_ch_default, key="hf_channel", placeholder="All channels")
 
 # Derive H_Tactic/Detail_Tactic options from detail rows when no channel is
 # selected, so the "Overall" rollup label doesn't pollute the cascade.
