@@ -506,17 +506,16 @@ KEY_CONTAINS          = None
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-combined_df = build_historical_forecast(
-    history_path=HISTORY_PATH,
-    future_spend_path=FUTURE_SPEND_PATH,
-    coefficients_path=COEFFICIENTS_PATH,
-    product_factors_path=PRODUCT_FACTORS_PATH,
-    output_path=OUTPUT_PATH,
-    model_type=MODEL_TYPE,
-    feature_run=FEATURE_RUN,
-    history_months=HISTORY_MONTHS,
-    spend_format=SPEND_FORMAT,
-    key_contains=KEY_CONTAINS,
-)
-
-combined_df
+if __name__ == "__main__":
+    combined_df = build_historical_forecast(
+        history_path=HISTORY_PATH,
+        future_spend_path=FUTURE_SPEND_PATH,
+        coefficients_path=COEFFICIENTS_PATH,
+        product_factors_path=PRODUCT_FACTORS_PATH,
+        output_path=OUTPUT_PATH,
+        model_type=MODEL_TYPE,
+        feature_run=FEATURE_RUN,
+        history_months=HISTORY_MONTHS,
+        spend_format=SPEND_FORMAT,
+        key_contains=KEY_CONTAINS,
+    )
