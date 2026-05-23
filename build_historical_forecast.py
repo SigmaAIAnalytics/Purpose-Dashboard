@@ -212,14 +212,35 @@ def score_forecast(
     product_factors_df: pd.DataFrame,
     model_type: str = "OLS",
     feature_run: str = "weekly",
+    key_contains: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Score weekly spend, apply product allocation, roll up to monthly."""
+    """Score weekly spend, apply product allocation, return weekly rows."""
+    if key_contains:
+        n_before = len(coeff_df)
+        coeff_df = coeff_df[coeff_df["Key"].astype(str).str.contains(key_contains, na=False)].copy()
+        print(f"  KEY_CONTAINS='{key_contains}': kept {len(coeff_df)}/{n_before} coefficient rows")
+
     preds = score_spend_with_coefficients(spend_df, coeff_df, model_type, feature_run)
     if preds.empty:
         print(f"  Warning: no predictions produced for model_type={model_type}, "
               f"feature_run={feature_run}. Check that these match values in the "
               f"coefficients file.")
         return pd.DataFrame()
+
+    # Warn if the same state has keys at different grain depths — summing them
+    # in _add_state_rollup would inflate totals.  Set KEY_CONTAINS to fix this.
+    if not key_contains:
+        preds["_depth"] = preds["Key"].astype(str).str.count(r"\|")
+        mixed = preds.groupby(STATE_COL)["_depth"].nunique()
+        mixed_states = mixed[mixed > 1]
+        if not mixed_states.empty:
+            print(
+                f"  ⚠️  Multi-grain coefficients detected for "
+                f"{len(mixed_states)} state(s): {mixed_states.index.tolist()[:5]}...\n"
+                f"     Set KEY_CONTAINS (e.g. 'CHANNEL_CD') to isolate one grain level "
+                f"and avoid double-counting in the rollup."
+            )
+        preds = preds.drop(columns=["_depth"])
 
     # Parse Key → dimension columns required by roll_up_weekly_forecast_to_monthly
     parsed = preds["Key"].apply(_parse_key_string)
@@ -285,35 +306,50 @@ def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
     Channel, H_Tactic, Detail_Tactic, and Product_Funded are null.
 
     These are the rows the dashboard shows when the user selects 'Overall' in
-    the dimension dropdowns. Only added when no null-Channel rows of that Type
-    already exist (e.g. if the model already produced state-level predictions).
+    the dimension dropdowns.
+
+    Rollup is always computed from non-null-Channel (detail-level) rows.  Any
+    existing null-Channel source rows are discarded and replaced with the
+    computed rollup so that state totals are consistent with the detail data.
+    If a Type has *only* null-Channel rows (e.g. a state-level model), those
+    rows are kept as-is.
     """
-    rollups = []
+    frames = []
     for type_val, grp in combined.groupby("Type"):
-        null_channel = grp["Channel"].isna() | grp["Channel"].astype(str).str.strip().isin({"None", "nan", ""})
-        if null_channel.any():
-            continue  # state-level rows already present — don't duplicate
+        null_ch = (
+            grp["Channel"].isna() |
+            grp["Channel"].astype(str).str.strip().isin({"None", "nan", ""})
+        )
+        detail_rows = grp[~null_ch]
 
-        grp = grp.copy()
+        if detail_rows.empty:
+            # Only state-level source rows — keep as-is, no rollup needed
+            frames.append(grp)
+            continue
+
+        # Compute rollup from detail rows; discard any pre-existing null-Channel
+        # rows to avoid adding them on top of the newly computed rollup
+        detail_rows = detail_rows.copy()
         for col in ["Applications", "Approvals", "Originations"]:
-            if col in grp.columns:
-                grp[col] = pd.to_numeric(grp[col], errors="coerce").fillna(0)
+            if col in detail_rows.columns:
+                detail_rows[col] = pd.to_numeric(detail_rows[col], errors="coerce").fillna(0)
 
-        agg = (
-            grp.groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
+        rollup = (
+            detail_rows
+            .groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
             [["Applications", "Approvals", "Originations"]]
             .sum()
         )
-        agg["Type"]           = type_val
-        agg["Channel"]        = None
-        agg["H_Tactic"]       = None
-        agg["Detail_Tactic"]  = None
-        agg["Product_Funded"] = None
-        rollups.append(agg)
+        rollup["Type"]           = type_val
+        rollup["Channel"]        = None
+        rollup["H_Tactic"]       = None
+        rollup["Detail_Tactic"]  = None
+        rollup["Product_Funded"] = None
 
-    if not rollups:
-        return combined
-    return pd.concat([combined] + rollups, ignore_index=True)
+        frames.append(detail_rows)
+        frames.append(rollup)
+
+    return pd.concat(frames, ignore_index=True) if frames else combined
 
 
 def build_historical_forecast(
@@ -326,6 +362,7 @@ def build_historical_forecast(
     feature_run: str = "weekly",
     history_months: int = 6,
     spend_format: str = "monthly",
+    key_contains: Optional[str] = None,
 ) -> pd.DataFrame:
     """Build and save historical_forecast.csv.
 
@@ -352,8 +389,10 @@ def build_historical_forecast(
     spend_df = prepare_weekly_spend(future_spend_path, spend_format)
     print(f"  → {len(spend_df)} weekly spend rows across {spend_df[STATE_COL].nunique()} states")
 
-    print(f"\nScoring forecast (model_type={model_type}, feature_run={feature_run}) ...")
-    forecast = score_forecast(spend_df, coeff_df, product_factors_df, model_type, feature_run)
+    print(f"\nScoring forecast (model_type={model_type}, feature_run={feature_run}"
+          + (f", key_contains='{key_contains}'" if key_contains else "") + ") ...")
+    forecast = score_forecast(spend_df, coeff_df, product_factors_df, model_type, feature_run,
+                              key_contains=key_contains)
     print(f"  → {len(forecast)} forecast rows")
 
     if actuals.empty and forecast.empty:
@@ -388,6 +427,15 @@ HISTORY_MONTHS        = 6          # how many months of actuals to include
 SPEND_FORMAT          = "monthly"  # "monthly" = dashboard format (Date, State, DSP ($) ...)
                                    # "weekly"  = ISO_YEAR, ISO_WEEK, STATE_CD, DSP ...
 
+# Optional: filter coefficient Keys to a specific grain level.
+# If the coefficient file has both state-level keys ("STATE_CD=TX") and
+# channel-level keys ("STATE_CD=TX|CHANNEL_CD=Paid Search"), scoring both
+# would double-count.  Set KEY_CONTAINS to keep only the grain you want, e.g.:
+#   KEY_CONTAINS = "CHANNEL_CD"   → channel-level only
+#   KEY_CONTAINS = "H_TACTIC"     → tactic-level only
+#   KEY_CONTAINS = None           → use all keys (may inflate if multi-grain)
+KEY_CONTAINS          = None
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 combined_df = build_historical_forecast(
@@ -400,6 +448,7 @@ combined_df = build_historical_forecast(
     feature_run=FEATURE_RUN,
     history_months=HISTORY_MONTHS,
     spend_format=SPEND_FORMAT,
+    key_contains=KEY_CONTAINS,
 )
 
 combined_df
