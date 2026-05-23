@@ -260,6 +260,10 @@ def score_forecast(
         "Predicted_APPS":      "Predicted APPS",
     })
 
+    # Remove coarser-grain rows before rollup so channel-level and tactic-level
+    # predictions for the same channel/week aren't both counted.
+    preds = _dedup_forecast_grain(preds)
+
     # Apply product allocation (adds APPLICATIONS_{label} etc. at weekly grain)
     if not product_factors_df.empty:
         preds = apply_product_allocation_to_forecast(preds, product_factors_df)
@@ -299,6 +303,41 @@ def score_forecast(
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+def _dedup_forecast_grain(preds: pd.DataFrame) -> pd.DataFrame:
+    """Remove coarser-grain rows where finer-grain rows exist for the same path.
+
+    If (State, Channel, week) has both channel-only rows (H_Tactic=null) and
+    tactic-level rows (H_Tactic specified), the channel-only rows are dropped.
+    Same logic applied for Detail_Tactic within each (State, Channel, H_Tactic).
+
+    This prevents _add_state_rollup from double-counting when the coefficient
+    file contains predictions at multiple grain levels for the same channel.
+    """
+    if preds.empty:
+        return preds
+
+    preds = preds.copy()
+    n_before = len(preds)
+
+    # Drop null-H_Tactic rows where tactic-level rows exist for same channel/week
+    has_htactic = preds.groupby(
+        ["State", "Channel", "ISO_Year", "ISO_Week"], dropna=False
+    )["H_Tactic"].transform(lambda s: s.notna().any())
+    preds = preds[~(preds["H_Tactic"].isna() & has_htactic)].copy()
+
+    # Drop null-Detail_Tactic rows where detail-level rows exist for same tactic/week
+    has_detail = preds.groupby(
+        ["State", "Channel", "H_Tactic", "ISO_Year", "ISO_Week"], dropna=False
+    )["Detail_Tactic"].transform(lambda s: s.notna().any())
+    preds = preds[~(preds["Detail_Tactic"].isna() & has_detail)]
+
+    dropped = n_before - len(preds)
+    if dropped:
+        print(f"  Cross-grain dedup: removed {dropped} coarser-grain rows "
+              f"(kept finest grain per State × Channel × week)")
+    return preds
+
 
 def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
     """
