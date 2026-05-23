@@ -15,7 +15,8 @@ from botocore.client import Config as _BotoConfig
 from build_state_division_models import spread_monthly_spend_to_weekly
 
 st.set_page_config(
-    page_title="Purpose Predictor — Application Calculator",
+    page_title="Forecast — Purpose Dashboard",
+    page_icon="🔮",
     layout="wide",
 )
 

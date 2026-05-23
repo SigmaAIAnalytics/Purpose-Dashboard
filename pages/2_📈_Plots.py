@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import load_df_from_spaces, render_comments_section
 
 st.set_page_config(
-    page_title="Historical & Forecast — Purpose Dashboard",
+    page_title="Plots — Purpose Dashboard",
+    page_icon="📈",
     layout="wide",
 )
 
