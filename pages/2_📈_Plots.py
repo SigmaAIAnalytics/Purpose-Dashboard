@@ -223,21 +223,39 @@ _ch_base = df if _sel_st == "All" else df[df["State"] == _sel_st]
 _ch_opts = ["All"] + _opts(_ch_base["Channel"])
 _sel_ch  = _ff2.selectbox("Channel", _ch_opts, index=_default_idx(_ch_opts), key="hf_channel")
 
-_ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
+# When Channel="All" the user wants to aggregate across channels. Derive
+# the H_Tactic/Detail_Tactic option lists from the detail rows only (excluding
+# the Channel="Overall" rollup rows) so "Overall" doesn't appear and the
+# cascading defaults don't silently restrict to the rollup view.
+_ht_base = (
+    _ch_base[_ch_base["Channel"] != "Overall"] if _sel_ch == "All"
+    else _ch_base[_ch_base["Channel"] == _sel_ch]
+)
 _ht_opts = ["All"] + _opts(_ht_base["H_Tactic"])
 _sel_ht  = _ff3.selectbox("H_Tactic", _ht_opts, index=_default_idx(_ht_opts), key="hf_h_tactic")
 
 _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
 _dt_opts = ["All"] + _opts(_dt_base["Detail_Tactic"])
-_sel_dt  = _ff4.selectbox("Detail_Tactic", _dt_opts, index=_default_idx(_dt_opts), key="hf_detail_tactic")
+# Only default to "Overall" when in rollup mode (Channel explicitly set to "Overall").
+# If Channel="All", default Detail_Tactic to "All" so all finest-grain rows are included.
+_dt_idx  = _default_idx(_dt_opts) if _sel_ch != "All" else 0
+_sel_dt  = _ff4.selectbox("Detail_Tactic", _dt_opts, index=_dt_idx, key="hf_detail_tactic")
 
 _pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
 _sel_pf  = _ff5.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
+# "Overall" rows are pre-computed rollups (Channel="Overall" = state-level total).
+# When a dimension filter is "All" we must EXCLUDE "Overall" rollup rows for
+# that dimension; otherwise the rollup is counted on top of the detail rows it
+# was built from, doubling the totals.
 filtered = df.copy()
-if _sel_st != "All": filtered = filtered[filtered["State"]          == _sel_st]
-if _sel_ch != "All": filtered = filtered[filtered["Channel"]        == _sel_ch]
+if _sel_st != "All":
+    filtered = filtered[filtered["State"] == _sel_st]
+if _sel_ch == "All":
+    filtered = filtered[filtered["Channel"] != "Overall"]
+else:
+    filtered = filtered[filtered["Channel"] == _sel_ch]
 if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
 if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
 if _sel_pf != "All": filtered = filtered[filtered["Product_Funded"] == _sel_pf]
