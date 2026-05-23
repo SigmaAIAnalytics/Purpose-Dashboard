@@ -347,11 +347,12 @@ def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
     These are the rows the dashboard shows when the user selects 'Overall' in
     the dimension dropdowns.
 
-    Rollup is always computed from non-null-Channel (detail-level) rows.  Any
-    existing null-Channel source rows are discarded and replaced with the
-    computed rollup so that state totals are consistent with the detail data.
-    If a Type has *only* null-Channel rows (e.g. a state-level model), those
-    rows are kept as-is.
+    For Forecast: if null-Channel rows already exist (depth-1 state-level model
+    predictions), use THEM as the authoritative rollup.  Summing depth-4 tactic
+    predictions over-counts for the ~23 states that have both a state-level and
+    tactic-level coefficient key.
+    For Actual: rollup is always computed by summing the detail rows (no depth-1
+    actuals exist).
     """
     frames = []
     for type_val, grp in combined.groupby("Type"):
@@ -366,19 +367,35 @@ def _add_state_rollup(combined: pd.DataFrame) -> pd.DataFrame:
             frames.append(grp)
             continue
 
-        # Compute rollup from detail rows; discard any pre-existing null-Channel
-        # rows to avoid adding them on top of the newly computed rollup
         detail_rows = detail_rows.copy()
         for col in ["Applications", "Approvals", "Originations"]:
             if col in detail_rows.columns:
                 detail_rows[col] = pd.to_numeric(detail_rows[col], errors="coerce").fillna(0)
 
-        rollup = (
-            detail_rows
-            .groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
-            [["Applications", "Approvals", "Originations"]]
-            .sum()
-        )
+        existing_null_ch = grp[null_ch]
+
+        if type_val == "Forecast" and not existing_null_ch.empty:
+            # Use depth-1 state-level model predictions as the rollup; they are
+            # already the correct state total and must not be replaced by the
+            # sum of tactic-level predictions.
+            existing_null_ch = existing_null_ch.copy()
+            for col in ["Applications", "Approvals", "Originations"]:
+                if col in existing_null_ch.columns:
+                    existing_null_ch[col] = pd.to_numeric(existing_null_ch[col], errors="coerce").fillna(0)
+            rollup = (
+                existing_null_ch
+                .groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
+                [["Applications", "Approvals", "Originations"]]
+                .sum()
+            )
+        else:
+            rollup = (
+                detail_rows
+                .groupby(["State", "ISO_Year", "ISO_Week"], as_index=False)
+                [["Applications", "Approvals", "Originations"]]
+                .sum()
+            )
+
         rollup["Type"]           = type_val
         rollup["Channel"]        = None
         rollup["H_Tactic"]       = None

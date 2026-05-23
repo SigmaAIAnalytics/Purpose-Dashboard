@@ -2077,10 +2077,13 @@ def score_from_coefficients_row(
         frame[transformed_name] = transformed.astype(float)
 
     # Reconstruct deterministic optional features when they appear in the model.
+    # time_index must match the training-window convention: week 1 of 2024 = 1,
+    # so index = (year - 2024) * 52 + week + 1.  Using row position here would
+    # give wrong values when scoring future data that doesn't start at week 1 of 2024.
     if TIME_INDEX_COL in coef_dict:
-        frame[TIME_INDEX_COL] = np.arange(1, len(frame) + 1, dtype=float)
+        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float)
     if TIME_INDEX_SQ_COL in coef_dict:
-        frame[TIME_INDEX_SQ_COL] = np.square(np.arange(1, len(frame) + 1, dtype=float))
+        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float))
     if YEAR_INDICATOR_2025_COL in coef_dict:
         frame[YEAR_INDICATOR_2025_COL] = (frame[YEAR_COL] == 2025).astype(float)
     if YEAR_INDICATOR_2026_COL in coef_dict:
