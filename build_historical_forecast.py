@@ -447,6 +447,18 @@ def build_historical_forecast(
         .reset_index(drop=True)
     )
 
+    # Write "Overall" explicitly for null/blank dimension columns so the chart
+    # page dropdowns can always filter to them without relying on coercion.
+    for col in ["Channel", "H_Tactic", "Detail_Tactic"]:
+        if col in combined.columns:
+            combined[col] = (
+                combined[col]
+                .fillna("Overall")
+                .astype(str)
+                .str.strip()
+                .replace({"nan": "Overall", "None": "Overall", "": "Overall"})
+            )
+
     combined.to_csv(output_path, index=False)
     print(f"\nSaved → {output_path}  ({len(combined)} rows)")
     return combined

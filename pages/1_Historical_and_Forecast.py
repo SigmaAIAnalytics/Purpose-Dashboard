@@ -181,9 +181,16 @@ _OVERALL_COLS = {"Channel", "H_Tactic", "Detail_Tactic"}
 
 for col in ["State", "Channel", "H_Tactic", "Detail_Tactic", "Product_Funded", "Type"]:
     if col in df.columns:
-        df[col] = df[col].astype(str).str.strip().replace("nan", "None")
-        if col in _OVERALL_COLS:
-            df[col] = df[col].replace("None", "Overall")
+        # Normalise to clean strings; convert any residual nulls in the
+        # dimension columns to "Overall" (build script does this too, but
+        # guard here as well in case of manually-uploaded files)
+        df[col] = df[col].fillna("Overall" if col in _OVERALL_COLS else "")
+        df[col] = (
+            df[col].astype(str).str.strip()
+            .replace({"nan": "Overall" if col in _OVERALL_COLS else "",
+                      "None": "Overall" if col in _OVERALL_COLS else ""}
+            )
+        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
