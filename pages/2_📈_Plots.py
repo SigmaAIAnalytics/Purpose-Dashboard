@@ -216,49 +216,40 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ── Cascading filters ─────────────────────────────────────────────────────────
 _ff1, _ff2, _ff3, _ff4, _ff5 = st.columns(5)
 
-_st_opts = ["All"] + _opts(df["State"])
-_sel_st  = _ff1.selectbox("State", _st_opts, key="hf_state")
+_sel_st = _ff1.multiselect("State", _opts(df["State"]), key="hf_state", placeholder="All states")
 
-_ch_base = df if _sel_st == "All" else df[df["State"] == _sel_st]
-_ch_opts = ["All"] + _opts(_ch_base["Channel"])
-_sel_ch  = _ff2.selectbox("Channel", _ch_opts, index=_default_idx(_ch_opts), key="hf_channel")
+_ch_base = df if not _sel_st else df[df["State"].isin(_sel_st)]
+_sel_ch  = _ff2.multiselect("Channel", _opts(_ch_base["Channel"]), key="hf_channel", placeholder="All channels")
 
-# When Channel="All" the user wants to aggregate across channels. Derive
-# the H_Tactic/Detail_Tactic option lists from the detail rows only (excluding
-# the Channel="Overall" rollup rows) so "Overall" doesn't appear and the
-# cascading defaults don't silently restrict to the rollup view.
+# Derive H_Tactic/Detail_Tactic options from detail rows when no channel is
+# selected, so the "Overall" rollup label doesn't pollute the cascade.
 _ht_base = (
-    _ch_base[_ch_base["Channel"] != "Overall"] if _sel_ch == "All"
-    else _ch_base[_ch_base["Channel"] == _sel_ch]
+    _ch_base[_ch_base["Channel"] != "Overall"] if not _sel_ch
+    else _ch_base[_ch_base["Channel"].isin(_sel_ch)]
 )
-_ht_opts = ["All"] + _opts(_ht_base["H_Tactic"])
-_sel_ht  = _ff3.selectbox("H_Tactic", _ht_opts, index=_default_idx(_ht_opts), key="hf_h_tactic")
+_sel_ht = _ff3.multiselect("H_Tactic", _opts(_ht_base["H_Tactic"]), key="hf_h_tactic", placeholder="All")
 
-_dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
-_dt_opts = ["All"] + _opts(_dt_base["Detail_Tactic"])
-# Only default to "Overall" when in rollup mode (Channel explicitly set to "Overall").
-# If Channel="All", default Detail_Tactic to "All" so all finest-grain rows are included.
-_dt_idx  = _default_idx(_dt_opts) if _sel_ch != "All" else 0
-_sel_dt  = _ff4.selectbox("Detail_Tactic", _dt_opts, index=_dt_idx, key="hf_detail_tactic")
+_dt_base = _ht_base if not _sel_ht else _ht_base[_ht_base["H_Tactic"].isin(_sel_ht)]
+_sel_dt  = _ff4.multiselect("Detail_Tactic", _opts(_dt_base["Detail_Tactic"]), key="hf_detail_tactic", placeholder="All")
 
-_pf_base = _dt_base if _sel_dt == "All" else _dt_base[_dt_base["Detail_Tactic"] == _sel_dt]
-_sel_pf  = _ff5.selectbox("Product Funded", ["All"] + _opts(_pf_base["Product_Funded"]), key="hf_product")
+_pf_base = _dt_base if not _sel_dt else _dt_base[_dt_base["Detail_Tactic"].isin(_sel_dt)]
+_sel_pf  = _ff5.multiselect("Product Funded", _opts(_pf_base["Product_Funded"]), key="hf_product", placeholder="All products")
 
 # ── Apply filters ─────────────────────────────────────────────────────────────
-# "Overall" rows are pre-computed rollups (Channel="Overall" = state-level total).
-# When a dimension filter is "All" we must EXCLUDE "Overall" rollup rows for
-# that dimension; otherwise the rollup is counted on top of the detail rows it
-# was built from, doubling the totals.
+# Empty multiselect = no restriction (show all).
+# When Channel is empty we aggregate across all detail rows and must EXCLUDE
+# the pre-computed "Overall" rollup to avoid double-counting.
+# When the user explicitly selects "Overall" it is included as chosen.
 filtered = df.copy()
-if _sel_st != "All":
-    filtered = filtered[filtered["State"] == _sel_st]
-if _sel_ch == "All":
+if _sel_st:
+    filtered = filtered[filtered["State"].isin(_sel_st)]
+if not _sel_ch:
     filtered = filtered[filtered["Channel"] != "Overall"]
 else:
-    filtered = filtered[filtered["Channel"] == _sel_ch]
-if _sel_ht != "All": filtered = filtered[filtered["H_Tactic"]       == _sel_ht]
-if _sel_dt != "All": filtered = filtered[filtered["Detail_Tactic"]  == _sel_dt]
-if _sel_pf != "All": filtered = filtered[filtered["Product_Funded"] == _sel_pf]
+    filtered = filtered[filtered["Channel"].isin(_sel_ch)]
+if _sel_ht: filtered = filtered[filtered["H_Tactic"].isin(_sel_ht)]
+if _sel_dt: filtered = filtered[filtered["Detail_Tactic"].isin(_sel_dt)]
+if _sel_pf: filtered = filtered[filtered["Product_Funded"].isin(_sel_pf)]
 
 # ── Aggregate to Year-Month-Type ──────────────────────────────────────────────
 if filtered.empty:

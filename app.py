@@ -987,52 +987,63 @@ if st.session_state.results_df is not None:
                        7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
 
         # State (independent)
-        _st_opts = ["All"] + sorted(ok_rows["State"].dropna().unique().tolist())
-        _sel_st  = _ff1.selectbox("Filter by State", _st_opts, key="filter_state")
+        _sel_st = _ff1.multiselect(
+            "Filter by State",
+            sorted(ok_rows["State"].dropna().unique().tolist()),
+            key="filter_state", placeholder="All states",
+        )
 
         # Month (scoped to State)
-        _mo_base  = ok_rows if _sel_st == "All" else ok_rows[ok_rows["State"] == _sel_st]
-        _mo_nums  = sorted(_mo_base["Month"].dropna().unique().astype(int).tolist())
-        _mo_labels= [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
-        _mo_map   = dict(zip(_mo_labels, _mo_nums))
-        _sel_mo   = _ff2.selectbox("Filter by Month", ["All"] + _mo_labels, key="filter_month")
+        _mo_base   = ok_rows if not _sel_st else ok_rows[ok_rows["State"].isin(_sel_st)]
+        _mo_nums   = sorted(_mo_base["Month"].dropna().unique().astype(int).tolist())
+        _mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
+        _mo_map    = dict(zip(_mo_labels, _mo_nums))
+        _sel_mo    = _ff2.multiselect(
+            "Filter by Month", _mo_labels,
+            key="filter_month", placeholder="All months",
+        )
 
         # Channel (scoped to State + Month)
-        _ch_base = _mo_base if _sel_mo == "All" else _mo_base[_mo_base["Month"] == _mo_map[_sel_mo]]
-        _ch_opts = ["All"] + sorted(_ch_base["Channel"].dropna().unique().tolist())
-        _sel_ch  = _ff3.selectbox("Filter by Channel", _ch_opts, key="filter_channel")
+        _ch_base = _mo_base if not _sel_mo else _mo_base[_mo_base["Month"].isin([_mo_map[m] for m in _sel_mo])]
+        _sel_ch  = _ff3.multiselect(
+            "Filter by Channel",
+            sorted(_ch_base["Channel"].dropna().unique().tolist()),
+            key="filter_channel", placeholder="All channels",
+        )
 
         # H_Tactic (scoped to Channel)
-        _ht_base = _ch_base if _sel_ch == "All" else _ch_base[_ch_base["Channel"] == _sel_ch]
-        _ht_opts = ["All"] + sorted(_ht_base["H_Tactic"].dropna().unique().tolist())
-        _sel_ht  = _ff4.selectbox("Filter by H_Tactic", _ht_opts, key="filter_h_tactic")
+        _ht_base = _ch_base if not _sel_ch else _ch_base[_ch_base["Channel"].isin(_sel_ch)]
+        _sel_ht  = _ff4.multiselect(
+            "Filter by H_Tactic",
+            sorted(_ht_base["H_Tactic"].dropna().unique().tolist()),
+            key="filter_h_tactic", placeholder="All",
+        )
 
         # Detail_Tactic (scoped to H_Tactic)
-        _dt_base = _ht_base if _sel_ht == "All" else _ht_base[_ht_base["H_Tactic"] == _sel_ht]
-        _dt_opts = ["All"] + sorted(_dt_base["Detail_Tactic"].dropna().unique().tolist())
-        _sel_dt  = _ff5.selectbox("Filter by Detail_Tactic", _dt_opts, key="filter_detail_tactic")
+        _dt_base = _ht_base if not _sel_ht else _ht_base[_ht_base["H_Tactic"].isin(_sel_ht)]
+        _sel_dt  = _ff5.multiselect(
+            "Filter by Detail_Tactic",
+            sorted(_dt_base["Detail_Tactic"].dropna().unique().tolist()),
+            key="filter_detail_tactic", placeholder="All",
+        )
 
         # Product (only shown if product factors file is loaded)
-        _sel_prod = "All"
+        _sel_prod = []
         if st.session_state.product_factors_df is not None:
-            _prod_opts = ["All"] + sorted(
-                st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique().tolist()
-            )
             _prod_col, _ = st.columns([1, 4])
-            _sel_prod = _prod_col.selectbox("Filter by Product Funded", _prod_opts, key="filter_product")
+            _sel_prod = _prod_col.multiselect(
+                "Filter by Product Funded",
+                sorted(st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique().tolist()),
+                key="filter_product", placeholder="All products",
+            )
 
-        # Apply row filters
+        # Apply row filters — empty list = no restriction
         display_df = results_df.copy()
-        if _sel_st != "All":
-            display_df = display_df[display_df["State"] == _sel_st]
-        if _sel_mo != "All":
-            display_df = display_df[display_df["Month"] == _mo_map[_sel_mo]]
-        if _sel_ch != "All":
-            display_df = display_df[display_df["Channel"] == _sel_ch]
-        if _sel_ht != "All":
-            display_df = display_df[display_df["H_Tactic"] == _sel_ht]
-        if _sel_dt != "All":
-            display_df = display_df[display_df["Detail_Tactic"] == _sel_dt]
+        if _sel_st: display_df = display_df[display_df["State"].isin(_sel_st)]
+        if _sel_mo: display_df = display_df[display_df["Month"].isin([_mo_map[m] for m in _sel_mo])]
+        if _sel_ch: display_df = display_df[display_df["Channel"].isin(_sel_ch)]
+        if _sel_ht: display_df = display_df[display_df["H_Tactic"].isin(_sel_ht)]
+        if _sel_dt: display_df = display_df[display_df["Detail_Tactic"].isin(_sel_dt)]
 
         # ── Primary output table ──────────────────────────────────────────────
         primary_cols = [
@@ -1043,17 +1054,20 @@ if st.session_state.results_df is not None:
         ]
         _prod_format: dict = {}
         if st.session_state.product_factors_df is not None:
-            if _sel_prod == "All":
+            if not _sel_prod:
                 primary_cols += ["Allocated_Approved", "Allocated_Originations"]
                 _prod_format  = {"Allocated_Approved": "{:,}", "Allocated_Originations": "{:,}"}
-            else:
-                _pkey = _safe_col(_sel_prod)
+            elif len(_sel_prod) == 1:
+                _pkey = _safe_col(_sel_prod[0])
                 primary_cols += [f"Applications_{_pkey}", f"Approvals_{_pkey}", f"Originations_{_pkey}"]
                 _prod_format  = {
                     f"Applications_{_pkey}": "{:,}",
                     f"Approvals_{_pkey}":    "{:,}",
                     f"Originations_{_pkey}": "{:,}",
                 }
+            else:
+                primary_cols += ["Allocated_Approved", "Allocated_Originations"]
+                _prod_format  = {"Allocated_Approved": "{:,}", "Allocated_Originations": "{:,}"}
         primary_cols = [c for c in primary_cols if c in results_df.columns]
 
         if display_df.empty:
