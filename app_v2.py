@@ -709,7 +709,7 @@ with st.sidebar:
 
     st.markdown(
         "<small style='color:var(--text-color);opacity:0.5'>"
-        "Oracle v1.0<br>Replicates Excel Output_Data scoring logic</small>",
+        "Oracle v1.0<br>SigmaAIAnalytics.com</small>",
         unsafe_allow_html=True,
     )
 
