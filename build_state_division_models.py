@@ -722,20 +722,29 @@ def build_product_allocation_factors(
         .sum(min_count=1)
         .rename(columns={"APPLICATIONS": "TOTAL_APPLICATIONS"})
     )
+    # Key-level approval and origination totals (summed across all products)
+    key_approval_totals = (
+        product_totals.groupby(grouping_keys, as_index=False)[["APPROVED", "ORIGINATIONS"]]
+        .sum(min_count=1)
+        .rename(columns={"APPROVED": "TOTAL_APPROVED", "ORIGINATIONS": "TOTAL_ORIGINATIONS"})
+    )
     factors = product_totals.merge(model_totals, on=grouping_keys, how="left")
+    factors = factors.merge(key_approval_totals, on=grouping_keys, how="left")
     factors["APPLICATION_SHARE"] = np.where(
         factors["TOTAL_APPLICATIONS"].abs() > EPSILON,
         factors["APPLICATIONS"] / factors["TOTAL_APPLICATIONS"],
         0.0,
     )
+    # Approval and origination rates are key-level (same across all products for a key)
+    # PRODUCT_FUNDED only records originated loans so product-level rates are not meaningful
     factors["APPROVAL_RATE"] = np.where(
-        factors["APPLICATIONS"].abs() > EPSILON,
-        factors["APPROVED"] / factors["APPLICATIONS"],
+        factors["TOTAL_APPLICATIONS"].abs() > EPSILON,
+        factors["TOTAL_APPROVED"] / factors["TOTAL_APPLICATIONS"],
         0.0,
     )
     factors["ORIGINATION_RATE"] = np.where(
-        factors["APPLICATIONS"].abs() > EPSILON,
-        factors["ORIGINATIONS"] / factors["APPLICATIONS"],
+        factors["TOTAL_APPLICATIONS"].abs() > EPSILON,
+        factors["TOTAL_ORIGINATIONS"] / factors["TOTAL_APPLICATIONS"],
         0.0,
     )
     factors["Key"] = factors[grouping_keys].apply(lambda row: format_model_key(grouping_keys, tuple(row)), axis=1)
@@ -782,8 +791,8 @@ def apply_product_allocation_to_forecast(
         for _, factor_row in factor_lookup[row_key].iterrows():
             product_label = safe_name(factor_row["PRODUCT_FUNDED"])
             allocated_apps = float(predicted_apps_raw) * float(factor_row["APPLICATION_SHARE"])
-            allocated_approved = allocated_apps * float(factor_row["APPROVAL_RATE"])
-            allocated_originations = allocated_apps * float(factor_row["ORIGINATION_RATE"])
+            allocated_approved = float(predicted_apps_raw) * float(factor_row["APPROVAL_RATE"])
+            allocated_originations = float(predicted_apps_raw) * float(factor_row["ORIGINATION_RATE"])
             enriched.at[row_idx, f"APPLICATIONS_{product_label}"] = allocated_apps
             enriched.at[row_idx, f"APPROVAL_{product_label}"] = allocated_approved
             enriched.at[row_idx, f"ORIGINATIONS_{product_label}"] = allocated_originations
@@ -1948,16 +1957,21 @@ def build_future_coefficients_frame(
             )
         )
 
+    _key_parts = _parse_key_string(metadata.entity)
     row: Dict[str, Any] = {
-        "Key": metadata.entity,
-        "Scope": metadata.scope,
-        "Model_Type": metadata.model_type,
-        "Feature_Run": metadata.dummy_family,
-        "Scaler_Type": metadata.scaler_type,
+        "Key":           metadata.entity,
+        "State":         _key_parts.get("STATE_CD",      None),
+        "Channel":       _key_parts.get("CHANNEL_CD",    "--Default--"),
+        "H_Tactic":      _key_parts.get("H_TACTIC",      "--Default--"),
+        "Detail_Tactic": _key_parts.get("DETAIL_TACTIC", "--Default--"),
+        "Scope":         metadata.scope,
+        "Model_Type":    metadata.model_type,
+        "Feature_Run":   metadata.dummy_family,
+        "Scaler_Type":   metadata.scaler_type,
         "Dropped_Dummy": metadata.dropped_dummy,
         "Media_Transform_Config": json.dumps(metadata.media_transform_config, default=str),
-        "Target": metadata.target_col,
-        "Intercept": intercept,
+        "Target":        metadata.target_col,
+        "Intercept":     intercept,
     }
     for term, coefficient in coef_items:
         row[term] = float(coefficient)
@@ -3681,7 +3695,13 @@ def run_future_forecast(
         training_summary_result.to_csv(output_root / f"model_training_summary{file_suffix}.csv", index=False)
         if not product_factors_df.empty:
             product_factors_df.to_csv(output_root / f"product_factors{file_suffix}.csv", index=False)
-        consolidate_forecast_output_files(output_root)
+        _consolidated = consolidate_forecast_output_files(output_root)
+        _coeff_cons = _consolidated.get("model_coefficients", pd.DataFrame())
+        _pf_cons    = _consolidated.get("product_factors",    pd.DataFrame())
+        if not _coeff_cons.empty and not _pf_cons.empty:
+            _pf_slim = _pf_cons[["Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"]].copy()
+            _joined  = _coeff_cons.merge(_pf_slim, on="Key", how="left")
+            _joined.to_csv(output_root / "modelcoeff_and_prodfactors.csv", index=False)
 
     return {
         "future_forecast": forecast_result,

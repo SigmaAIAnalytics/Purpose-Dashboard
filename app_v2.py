@@ -202,6 +202,18 @@ def _load_coeff_df(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _load_product_factors(df: pd.DataFrame) -> pd.DataFrame:
+    """Extract Key → PRODUCT_FUNDED + APPLICATION_SHARE lookup from the model file."""
+    if "PRODUCT_FUNDED" not in df.columns or "APPLICATION_SHARE" not in df.columns:
+        return pd.DataFrame()
+    return (
+        df[["Key", "PRODUCT_FUNDED", "APPLICATION_SHARE"]]
+        .dropna(subset=["PRODUCT_FUNDED"])
+        .drop_duplicates(subset=["Key", "PRODUCT_FUNDED"])
+        .reset_index(drop=True)
+    )
+
+
 # ── Upload column aliases & normaliser ───────────────────────────────────────
 _UPLOAD_ALIASES: dict[str, str] = {
     "date":             "Date",
@@ -578,16 +590,17 @@ def to_excel_bytes(results_df: pd.DataFrame, input_df: pd.DataFrame) -> bytes:
 
 
 # ── Session state init ────────────────────────────────────────────────────────
-if "results_df"        not in st.session_state: st.session_state.results_df        = None
-if "monthly_df"        not in st.session_state: st.session_state.monthly_df        = None
-if "input_snap"        not in st.session_state: st.session_state.input_snap        = None
-if "coeff_df"          not in st.session_state: st.session_state.coeff_df          = None
-if "coeff_source"      not in st.session_state: st.session_state.coeff_source      = None
-if "upload_df"         not in st.session_state: st.session_state.upload_df         = None
-if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
-if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
-if "spend_source"      not in st.session_state: st.session_state.spend_source      = None
-if "spaces_errors"     not in st.session_state: st.session_state.spaces_errors     = {}
+if "results_df"          not in st.session_state: st.session_state.results_df          = None
+if "monthly_df"          not in st.session_state: st.session_state.monthly_df          = None
+if "input_snap"          not in st.session_state: st.session_state.input_snap          = None
+if "coeff_df"            not in st.session_state: st.session_state.coeff_df            = None
+if "coeff_source"        not in st.session_state: st.session_state.coeff_source        = None
+if "product_factors_df"  not in st.session_state: st.session_state.product_factors_df  = None
+if "upload_df"           not in st.session_state: st.session_state.upload_df           = None
+if "upload_version"      not in st.session_state: st.session_state.upload_version      = 0
+if "last_input_name"     not in st.session_state: st.session_state.last_input_name     = None
+if "spend_source"        not in st.session_state: st.session_state.spend_source        = None
+if "spaces_errors"       not in st.session_state: st.session_state.spaces_errors       = {}
 
 # ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
 if st.session_state.coeff_df is None:
@@ -595,8 +608,9 @@ if st.session_state.coeff_df is None:
         "SPACES_MODEL_FILE", "modelcoeff_and_prodfactors.csv"
     )
     if _spaces_model is not None:
-        st.session_state.coeff_df     = _load_coeff_df(_spaces_model)
-        st.session_state.coeff_source = "spaces"
+        st.session_state.coeff_df            = _load_coeff_df(_spaces_model)
+        st.session_state.product_factors_df  = _load_product_factors(_spaces_model)
+        st.session_state.coeff_source        = "spaces"
         st.session_state.spaces_errors.pop("model", None)
     elif _err:
         st.session_state.spaces_errors["model"] = _err
@@ -635,9 +649,11 @@ with st.sidebar:
             )
             if _ov_model:
                 try:
-                    _ov_coeff = _load_coeff_df(pd.read_csv(_ov_model))
-                    st.session_state.coeff_df     = _ov_coeff
-                    st.session_state.coeff_source = "upload"
+                    _ov_raw = pd.read_csv(_ov_model)
+                    _ov_coeff = _load_coeff_df(_ov_raw)
+                    st.session_state.coeff_df           = _ov_coeff
+                    st.session_state.product_factors_df = _load_product_factors(_ov_raw)
+                    st.session_state.coeff_source       = "upload"
                     st.success(f"✅ Overridden — {len(_ov_coeff)} keys")
                 except Exception as e:
                     st.error(f"Failed to read file: {e}")
@@ -650,9 +666,11 @@ with st.sidebar:
         )
         if model_file:
             try:
-                _coeff = _load_coeff_df(pd.read_csv(model_file))
-                st.session_state.coeff_df     = _coeff
-                st.session_state.coeff_source = "upload"
+                _raw = pd.read_csv(model_file)
+                _coeff = _load_coeff_df(_raw)
+                st.session_state.coeff_df           = _coeff
+                st.session_state.product_factors_df = _load_product_factors(_raw)
+                st.session_state.coeff_source       = "upload"
                 _keys = _coeff["Key"].dropna().tolist() if "Key" in _coeff.columns else []
                 st.success(f"✅ Loaded — {len(_keys)} model keys")
             except Exception as e:
@@ -984,6 +1002,23 @@ if st.session_state.results_df is not None:
                 mask |= df[col].isin(others)
             return df[mask]
 
+        # Product filter
+        _pf_data = st.session_state.product_factors_df
+        _prod_opts = (
+            sorted(_pf_data["PRODUCT_FUNDED"].dropna().unique().tolist())
+            if _pf_data is not None and not _pf_data.empty else []
+        )
+        if _prod_opts:
+            _pf_col, _ = st.columns([2, 3])
+            _sel_prod = _pf_col.multiselect(
+                "Filter by Product",
+                _prod_opts,
+                key="monthly_filter_product",
+                placeholder="All products",
+            )
+        else:
+            _sel_prod = []
+
         # Apply filters
         m_display = monthly_df.copy()
         if _sel_m_st: m_display = m_display[m_display["State"].isin(_sel_m_st)]
@@ -991,6 +1026,24 @@ if st.session_state.results_df is not None:
         m_display = _apply_grain_filter(m_display, "Channel",       _sel_m_ch)
         m_display = _apply_grain_filter(m_display, "H_Tactic",      _sel_m_ht)
         m_display = _apply_grain_filter(m_display, "Detail_Tactic", _sel_m_dt)
+
+        # Scale origination columns by APPLICATION_SHARE for selected product
+        _orig_rounded_cols = [
+            "Allocated_Originations_Rounded",
+            "Baseline_Originations_Rounded",
+            "Incremental_Originations_Rounded",
+        ]
+        if _sel_prod and _pf_data is not None and not _pf_data.empty:
+            _pf_sel = (
+                _pf_data[_pf_data["PRODUCT_FUNDED"].isin(_sel_prod)]
+                .groupby("Key", as_index=False)["APPLICATION_SHARE"]
+                .sum()
+            )
+            m_display = m_display.merge(_pf_sel, on="Key", how="left")
+            _share = m_display["APPLICATION_SHARE"].fillna(0)
+            for _oc in [c for c in _orig_rounded_cols if c in m_display.columns]:
+                m_display[_oc] = (m_display[_oc].astype(float) * _share).round().astype("Int64")
+            m_display = m_display.drop(columns=["APPLICATION_SHARE"])
 
         # ── APPS view selector ────────────────────────────────────────────────────
         _view_col, _ = st.columns([2, 3])
