@@ -151,6 +151,12 @@ st.markdown(
     [data-testid="stDataFrame"] * {
         color: var(--text-color) !important;
     }
+
+    /* ══ APPROVAL RATE OVERRIDE — small checkbox label ══════════════════════ */
+    div[data-testid="metric-container"] ~ div [data-testid="stCheckbox"] label p {
+        font-size: 0.72rem !important;
+        opacity: 0.7;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1135,6 +1141,31 @@ if st.session_state.results_df is not None:
         if m_display.empty:
             st.info("No rows match the selected filters.")
         else:
+            # ── Apply approval rate override (reads session state from previous rerun) ──
+            _appr_apps_sum = m_display["Allocated_Predicted_APPS_Rounded"].sum() if "Allocated_Predicted_APPS_Rounded" in m_display.columns else 0
+            _has_appr_data = _approval_col in m_display.columns and _appr_apps_sum > 0
+            if _has_appr_data:
+                _blended_rate = m_display[_approval_col].sum() / _appr_apps_sum
+                if st.session_state.get("appr_rate_override_on", False):
+                    _appr_rate_override = st.session_state.get("appr_rate_override", _blended_rate * 100) / 100.0
+                    for _apps_r, _appr_r in [
+                        ("Allocated_Predicted_APPS_Rounded", "Allocated_Approved_Rounded"),
+                        ("Baseline_APPS_Rounded",            "Baseline_Approved_Rounded"),
+                        ("Incremental_APPS_Rounded",         "Incremental_Approved_Rounded"),
+                    ]:
+                        if _apps_r in m_display.columns and _appr_r in m_display.columns:
+                            m_display[_appr_r] = (m_display[_apps_r].astype(float) * _appr_rate_override).round().astype("Int64")
+                    # Scale originations by the same ratio (keeps originations-per-approval fixed)
+                    if _blended_rate > 0:
+                        _orig_scale = _appr_rate_override / _blended_rate
+                        for _orig_r in [
+                            "Allocated_Originations_Rounded",
+                            "Baseline_Originations_Rounded",
+                            "Incremental_Originations_Rounded",
+                        ]:
+                            if _orig_r in m_display.columns:
+                                m_display[_orig_r] = (m_display[_orig_r].astype(float) * _orig_scale).round().astype("Int64")
+
             # ── Summary metrics ───────────────────────────────────────────────
             _apps_total  = int(m_display[_display_apps_col].sum()) if _display_apps_col else 0
             _appr_total  = int(m_display[_approval_col].sum())    if _has_approved else None
@@ -1145,6 +1176,23 @@ if st.session_state.results_df is not None:
             _mcols[0].metric("Predicted Applications", f"{_apps_total:,}")
             if _appr_total is not None:
                 _mcols[1].metric("Likely Approvals", f"{_appr_total:,}")
+                if _has_appr_data:
+                    _mcols[1].markdown(
+                        f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
+                        f"Rate: <strong>{_blended_rate * 100:.2f}%</strong></div>",
+                        unsafe_allow_html=True,
+                    )
+                    _override_on = _mcols[1].checkbox("Override", key="appr_rate_override_on")
+                    if _override_on:
+                        _mcols[1].number_input(
+                            "Rate (%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=round(_blended_rate * 100, 2),
+                            step=0.1,
+                            format="%.2f",
+                            key="appr_rate_override",
+                        )
             if _orig_total is not None:
                 _mcols[1 + (1 if _appr_total is not None else 0)].metric("Likely Originations", f"{_orig_total:,}")
 
