@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar as _calendar
 import json
 import os
 import uuid
@@ -12,7 +13,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from botocore.client import Config as _BotoConfig
-from build_state_division_models import spread_monthly_spend_to_weekly
+from build_state_division_models import roll_up_weekly_forecast_to_monthly, spread_monthly_spend_to_weekly
 
 st.set_page_config(
     page_title="Forecast — Purpose Dashboard",
@@ -189,6 +190,25 @@ _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
 
 def _safe_col(name: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in str(name)).strip("_")
+
+
+_PF_COLS = ["PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"]
+
+
+def _split_model_file(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split modelcoeff_and_prodfactors into (coeff_df, product_factors_df)."""
+    coeff = (
+        df.drop(columns=[c for c in _PF_COLS if c in df.columns])
+        .drop_duplicates(subset=["Key"])
+        .reset_index(drop=True)
+    )
+    pf_present = [c for c in ["Key"] + _PF_COLS if c in df.columns]
+    product_factors = (
+        df[pf_present]
+        .dropna(subset=["PRODUCT_FUNDED"])
+        .reset_index(drop=True)
+    )
+    return coeff, product_factors
 
 
 # ── Upload column aliases & normaliser ───────────────────────────────────────
@@ -446,7 +466,7 @@ def _score_coeff_row(
 
     return {
         "Predicted APPS":               max(0, int(round(prediction))),
-        "raw_prediction":               round(prediction, 6),
+        "Predicted APPS Raw":           round(prediction, 6),
         "95% Confidence Lower Limit":   int(round(lower_ci)),
         "95% Confidence Upper Limit":   int(round(upper_ci)),
         "time_index":                   time_index,
@@ -496,15 +516,16 @@ def run_predictions(input_df: pd.DataFrame, coeff_df: pd.DataFrame) -> pd.DataFr
 
         if state_coeffs.empty:
             results.append({
-                "State": state, "ISO Year": iso_year, "ISO Week": iso_week,
+                "State": state, "ISO_Year": iso_year, "ISO_Week": iso_week,
                 "Month": month,
                 **{c: row[c] for c in spend_cols},
                 "Channel": None, "H_Tactic": None,
                 "Detail_Tactic": None, "Product": None,
                 "Predicted APPS": None,
-                "raw_prediction": None,
+                "Predicted APPS Raw": None,
                 "95% Confidence Lower Limit": None,
                 "95% Confidence Upper Limit": None,
+                "Run_Status": "SKIPPED",
                 "_grain": -1, "_ch": "", "_ht": "", "_dt": "",
                 "Model_Key": f"STATE_CD={state}",
                 "Model_Status": "No coefficient found",
@@ -527,7 +548,7 @@ def run_predictions(input_df: pd.DataFrame, coeff_df: pd.DataFrame) -> pd.DataFr
             scored = _score_coeff_row(coeff, row, iso_year, iso_week)
 
             results.append({
-                "State": state, "ISO Year": iso_year, "ISO Week": iso_week,
+                "State": state, "ISO_Year": iso_year, "ISO_Week": iso_week,
                 "Month": month,
                 **{c: row[c] for c in spend_cols},
                 "Channel":       channel,
@@ -535,6 +556,7 @@ def run_predictions(input_df: pd.DataFrame, coeff_df: pd.DataFrame) -> pd.DataFr
                 "Detail_Tactic": detail_tactic,
                 "Product":       None,
                 **scored,
+                "Run_Status": "SUCCESS",
                 "_grain": grain,
                 "_ch":    channel      or "",
                 "_ht":    h_tactic     or "",
@@ -548,7 +570,7 @@ def run_predictions(input_df: pd.DataFrame, coeff_df: pd.DataFrame) -> pd.DataFr
 
     out = pd.DataFrame(results)
     out = out.sort_values(
-        ["State", "ISO Year", "ISO Week", "_grain", "_ch", "_ht", "_dt"],
+        ["State", "ISO_Year", "ISO_Week", "_grain", "_ch", "_ht", "_dt"],
         ascending=True,
         na_position="first",
     ).drop(columns=["_grain", "_ch", "_ht", "_dt"]).reset_index(drop=True)
@@ -566,11 +588,11 @@ def to_excel_bytes(results_df: pd.DataFrame, input_df: pd.DataFrame) -> bytes:
 
 # ── Session state init ────────────────────────────────────────────────────────
 if "results_df"        not in st.session_state: st.session_state.results_df        = None
+if "monthly_df"        not in st.session_state: st.session_state.monthly_df        = None
 if "input_snap"        not in st.session_state: st.session_state.input_snap        = None
 if "coeff_df"          not in st.session_state: st.session_state.coeff_df          = None
 if "coeff_source"      not in st.session_state: st.session_state.coeff_source      = None
 if "product_factors_df"not in st.session_state: st.session_state.product_factors_df= None
-if "pf_source"         not in st.session_state: st.session_state.pf_source         = None
 if "upload_df"         not in st.session_state: st.session_state.upload_df         = None
 if "upload_version"    not in st.session_state: st.session_state.upload_version    = 0
 if "last_input_name"   not in st.session_state: st.session_state.last_input_name   = None
@@ -579,26 +601,17 @@ if "spaces_errors"     not in st.session_state: st.session_state.spaces_errors  
 
 # ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
 if st.session_state.coeff_df is None:
-    _spaces_coeff, _err = _load_df_from_spaces(
-        "SPACES_COEFF_FILE", "model_coefficients.csv", excel_sheet="MODEL_Coefficients"
+    _spaces_model, _err = _load_df_from_spaces(
+        "SPACES_MODEL_FILE", "modelcoeff_and_prodfactors.csv"
     )
-    if _spaces_coeff is not None:
-        st.session_state.coeff_df     = _spaces_coeff
-        st.session_state.coeff_source = "spaces"
-        st.session_state.spaces_errors.pop("coeff", None)
+    if _spaces_model is not None:
+        _coeff, _pf = _split_model_file(_spaces_model)
+        st.session_state.coeff_df          = _coeff
+        st.session_state.product_factors_df = _pf
+        st.session_state.coeff_source      = "spaces"
+        st.session_state.spaces_errors.pop("model", None)
     elif _err:
-        st.session_state.spaces_errors["coeff"] = _err
-
-if st.session_state.product_factors_df is None:
-    _spaces_pf, _err = _load_df_from_spaces("SPACES_PF_FILE", "product_factors.csv")
-    if _spaces_pf is not None:
-        _pf_required = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
-        if _pf_required.issubset(set(_spaces_pf.columns)):
-            st.session_state.product_factors_df = _spaces_pf
-            st.session_state.pf_source           = "spaces"
-            st.session_state.spaces_errors.pop("pf", None)
-    elif _err:
-        st.session_state.spaces_errors["pf"] = _err
+        st.session_state.spaces_errors["model"] = _err
 
 if st.session_state.upload_df is None:
     _spaces_spend, _err = _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
@@ -615,139 +628,78 @@ if st.session_state.upload_df is None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — Coefficient file uploader
+# SIDEBAR — Model file uploader
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("## ⚙️ Model Coefficients")
+    st.markdown("## ⚙️ Model File")
 
     if st.session_state.coeff_source == "spaces":
         _coeff_keys = (
             st.session_state.coeff_df["Key"].dropna().tolist()
             if "Key" in st.session_state.coeff_df.columns else []
         )
-        st.success(f"✅ Auto-loaded from Spaces — {len(_coeff_keys)} model keys")
+        _pf_products = (
+            st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+            if st.session_state.product_factors_df is not None else []
+        )
+        st.success(
+            f"✅ Auto-loaded from Spaces — {len(_coeff_keys)} model keys, "
+            f"{len(_pf_products)} product(s)"
+        )
         with st.expander("Override with a local file"):
-            _ov_coeff = st.file_uploader(
-                "Upload Model Coefficients",
-                type=["csv", "xlsx"],
-                key="coeff_uploader",
+            _ov_model = st.file_uploader(
+                "Upload modelcoeff_and_prodfactors.csv",
+                type=["csv"],
+                key="model_uploader",
             )
-            if _ov_coeff:
+            if _ov_model:
                 try:
-                    if _ov_coeff.name.endswith(".csv"):
-                        _ov_df = pd.read_csv(_ov_coeff)
-                    else:
-                        _xl = pd.ExcelFile(_ov_coeff)
-                        _sh = (
-                            "MODEL_Coefficients"
-                            if "MODEL_Coefficients" in _xl.sheet_names
-                            else _xl.sheet_names[0]
-                        )
-                        _ov_df = _xl.parse(_sh)
-                    st.session_state.coeff_df     = _ov_df
-                    st.session_state.coeff_source = "upload"
-                    _ov_keys = _ov_df["Key"].dropna().tolist() if "Key" in _ov_df.columns else []
-                    st.success(f"✅ Overridden — {len(_ov_keys)} keys loaded")
+                    _ov_df = pd.read_csv(_ov_model)
+                    _ov_coeff, _ov_pf = _split_model_file(_ov_df)
+                    st.session_state.coeff_df          = _ov_coeff
+                    st.session_state.product_factors_df = _ov_pf
+                    st.session_state.coeff_source      = "upload"
+                    st.success(
+                        f"✅ Overridden — {len(_ov_coeff)} keys, "
+                        f"{len(_ov_pf['PRODUCT_FUNDED'].dropna().unique())} product(s)"
+                    )
                 except Exception as e:
                     st.error(f"Failed to read file: {e}")
     else:
-        st.markdown("Upload the `MODEL_Coefficients` sheet from the Excel workbook.")
-        coeff_file = st.file_uploader(
-            "Upload Model Coefficients",
-            type=["csv", "xlsx"],
-            key="coeff_uploader",
+        st.markdown("Upload `modelcoeff_and_prodfactors.csv` generated by the model pipeline.")
+        model_file = st.file_uploader(
+            "Upload modelcoeff_and_prodfactors.csv",
+            type=["csv"],
+            key="model_uploader",
         )
-        if coeff_file:
+        if model_file:
             try:
-                if coeff_file.name.endswith(".csv"):
-                    coeff_df = pd.read_csv(coeff_file)
-                else:
-                    xl = pd.ExcelFile(coeff_file)
-                    sheet = (
-                        "MODEL_Coefficients"
-                        if "MODEL_Coefficients" in xl.sheet_names
-                        else xl.sheet_names[0]
-                    )
-                    coeff_df = xl.parse(sheet)
-                st.session_state.coeff_df     = coeff_df
-                st.session_state.coeff_source = "upload"
-                keys = coeff_df["Key"].dropna().tolist() if "Key" in coeff_df.columns else []
-                st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
+                _raw = pd.read_csv(model_file)
+                _coeff, _pf = _split_model_file(_raw)
+                st.session_state.coeff_df          = _coeff
+                st.session_state.product_factors_df = _pf
+                st.session_state.coeff_source      = "upload"
+                _keys = _coeff["Key"].dropna().tolist() if "Key" in _coeff.columns else []
+                _prods = _pf["PRODUCT_FUNDED"].dropna().unique().tolist()
+                st.success(
+                    f"✅ Loaded — {len(_keys)} model keys, "
+                    f"{len(_prods)} product(s): {', '.join(sorted(_prods))}"
+                )
             except Exception as e:
-                st.error(f"Failed to read coefficient file: {e}")
+                st.error(f"Failed to read model file: {e}")
         else:
             if st.session_state.coeff_df is not None:
-                keys = (
+                _keys = (
                     st.session_state.coeff_df["Key"].dropna().tolist()
                     if "Key" in st.session_state.coeff_df.columns else []
                 )
-                st.success(f"✅ Coefficients loaded — {len(keys)} model keys found")
-            else:
-                st.info("No file uploaded yet.")
-
-    st.markdown("---")
-    st.markdown("## 📦 Product Factors")
-
-    if st.session_state.pf_source == "spaces":
-        _pf_products = (
-            st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().unique().tolist()
-        )
-        st.success(
-            f"✅ Auto-loaded from Spaces — {len(_pf_products)} product(s): "
-            f"{', '.join(sorted(_pf_products))}"
-        )
-        with st.expander("Override with a local file"):
-            _ov_pf = st.file_uploader(
-                "Upload Product Factors",
-                type=["csv"],
-                key="pf_uploader",
-            )
-            if _ov_pf:
-                try:
-                    _ov_pf_df = pd.read_csv(_ov_pf)
-                    _pf_req   = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
-                    _pf_miss  = _pf_req - set(_ov_pf_df.columns)
-                    if _pf_miss:
-                        st.error(f"Missing columns: {', '.join(sorted(_pf_miss))}")
-                    else:
-                        st.session_state.product_factors_df = _ov_pf_df
-                        st.session_state.pf_source           = "upload"
-                        _ov_prods = _ov_pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
-                        st.success(f"✅ Overridden — {len(_ov_prods)} product(s)")
-                except Exception as e:
-                    st.error(f"Failed to read file: {e}")
-    else:
-        st.markdown("Upload the `product_factors.csv` produced alongside the coefficients file.")
-        pf_file = st.file_uploader(
-            "Upload Product Factors",
-            type=["csv"],
-            key="pf_uploader",
-        )
-        if pf_file:
-            try:
-                pf_df = pd.read_csv(pf_file)
-                required_pf = {"Key", "PRODUCT_FUNDED", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"}
-                missing_pf  = required_pf - set(pf_df.columns)
-                if missing_pf:
-                    st.error(f"Missing columns: {', '.join(sorted(missing_pf))}")
-                else:
-                    st.session_state.product_factors_df = pf_df
-                    st.session_state.pf_source           = "upload"
-                    products = pf_df["PRODUCT_FUNDED"].dropna().unique().tolist()
-                    st.success(
-                        f"✅ Product factors loaded — {len(products)} product(s): "
-                        f"{', '.join(sorted(products))}"
-                    )
-            except Exception as e:
-                st.error(f"Failed to read product factors file: {e}")
-        else:
-            if st.session_state.product_factors_df is not None:
-                products = (
+                _prods = (
                     st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().unique().tolist()
+                    if st.session_state.product_factors_df is not None else []
                 )
                 st.success(
-                    f"✅ Product factors loaded — {len(products)} product(s): "
-                    f"{', '.join(sorted(products))}"
+                    f"✅ Loaded — {len(_keys)} model keys, "
+                    f"{len(_prods)} product(s)"
                 )
             else:
                 st.info("No file uploaded yet.")
@@ -760,8 +712,7 @@ with st.sidebar:
         st.markdown(f"**Bucket:** `{bucket or '(not set)'}`")
         st.markdown(f"**SPACES_KEY set:** `{'yes' if os.environ.get('SPACES_KEY') else 'no'}`")
         st.markdown(f"**SPACES_SECRET set:** `{'yes' if os.environ.get('SPACES_SECRET') else 'no'}`")
-        st.markdown(f"**SPACES_COEFF_FILE:** `{os.environ.get('SPACES_COEFF_FILE', '(default)')}`")
-        st.markdown(f"**SPACES_PF_FILE:** `{os.environ.get('SPACES_PF_FILE', '(default)')}`")
+        st.markdown(f"**SPACES_MODEL_FILE:** `{os.environ.get('SPACES_MODEL_FILE', '(default)')}`")
         st.markdown(f"**SPACES_SPEND_FILE:** `{os.environ.get('SPACES_SPEND_FILE', '(default)')}`")
         if st.session_state.spaces_errors:
             for k, msg in st.session_state.spaces_errors.items():
@@ -888,7 +839,7 @@ run_clicked = st.button("▶ Run Predictions", type="primary")
 if run_clicked:
     # ── Validation ────────────────────────────────────────────────────────────
     if st.session_state.coeff_df is None:
-        st.error("⚠️ Please upload a coefficient file in the sidebar first.")
+        st.error("⚠️ Please upload modelcoeff_and_prodfactors.csv in the sidebar first.")
         st.stop()
 
     valid_rows = edited_df.dropna(subset=["Date", "State"])
@@ -910,12 +861,12 @@ if run_clicked:
         baseline_df = run_predictions(zero_df, st.session_state.coeff_df)
 
         baseline_lookup = (
-            baseline_df[["State", "ISO Year", "ISO Week", "Model_Key", "Predicted APPS"]]
+            baseline_df[["State", "ISO_Year", "ISO_Week", "Model_Key", "Predicted APPS"]]
             .rename(columns={"Predicted APPS": "Baseline APPS"})
         )
         results_df = results_df.merge(
             baseline_lookup,
-            on=["State", "ISO Year", "ISO Week", "Model_Key"],
+            on=["State", "ISO_Year", "ISO_Week", "Model_Key"],
             how="left",
         )
         results_df["Baseline APPS"] = results_df[["Predicted APPS", "Baseline APPS"]].min(axis=1)
@@ -927,27 +878,58 @@ if run_clicked:
         if st.session_state.product_factors_df is not None:
             pf = st.session_state.product_factors_df.copy()
             pf["PRODUCT_FUNDED"] = pf["PRODUCT_FUNDED"].astype(str)
-            results_df["Allocated_Approved"]     = 0.0
-            results_df["Allocated_Originations"] = 0.0
+
+            # Per-product Applications and Originations (equal: PRODUCT_FUNDED records originated loans)
             for product, grp in pf.groupby("PRODUCT_FUNDED", dropna=False):
                 pkey    = _safe_col(product)
                 factors = results_df[["Model_Key"]].merge(
-                    grp[["Key", "APPLICATION_SHARE", "APPROVAL_RATE", "ORIGINATION_RATE"]],
+                    grp[["Key", "APPLICATION_SHARE"]],
                     left_on="Model_Key", right_on="Key", how="left",
                 )
-                apps   = results_df["raw_prediction"].clip(lower=0) * factors["APPLICATION_SHARE"].fillna(0).values
-                approv = apps * factors["APPROVAL_RATE"].fillna(0).values
-                orig   = apps * factors["ORIGINATION_RATE"].fillna(0).values
-                results_df[f"Applications_{pkey}"] = apps.fillna(0).round().astype(int)
-                results_df[f"Approvals_{pkey}"]    = approv.fillna(0).round().astype(int)
-                results_df[f"Originations_{pkey}"] = orig.fillna(0).round().astype(int)
-                results_df["Allocated_Approved"]     += approv.fillna(0)
-                results_df["Allocated_Originations"] += orig.fillna(0)
-            results_df["Allocated_Approved"]     = results_df["Allocated_Approved"].fillna(0).round().astype(int)
-            results_df["Allocated_Originations"] = results_df["Allocated_Originations"].fillna(0).round().astype(int)
+                alloc = results_df["Predicted APPS Raw"].clip(lower=0) * factors["APPLICATION_SHARE"].fillna(0).values
+                results_df[f"APPLICATIONS_{pkey}"] = alloc.fillna(0).round().astype(int)
+                results_df[f"ORIGINATIONS_{pkey}"] = alloc.fillna(0).round().astype(int)
+
+            # Key-level Approved and Originated — rates are not meaningful per product
+            _key_rates = pf.drop_duplicates("Key")[["Key", "APPROVAL_RATE", "ORIGINATION_RATE"]]
+            _rates = results_df[["Model_Key"]].merge(
+                _key_rates, left_on="Model_Key", right_on="Key", how="left"
+            )
+            _raw_clipped = results_df["Predicted APPS Raw"].clip(lower=0)
+            # *_Total (float) columns flow into the monthly rollup for accurate pro-rating
+            results_df["APPROVAL_Total"]         = (_raw_clipped * _rates["APPROVAL_RATE"].fillna(0).values).fillna(0)
+            results_df["ORIGINATION_Total"]      = (_raw_clipped * _rates["ORIGINATION_RATE"].fillna(0).values).fillna(0)
+            results_df["Allocated_Approved"]     = results_df["APPROVAL_Total"].round().astype(int)
+            results_df["Allocated_Originations"] = results_df["ORIGINATION_Total"].round().astype(int)
 
     st.session_state.results_df = results_df
     st.session_state.input_snap = valid_rows.copy()
+
+    _rollup_input = results_df.copy()
+    _rollup_input["Key"] = _rollup_input["Model_Key"]
+    _monthly_pred = roll_up_weekly_forecast_to_monthly(_rollup_input)
+
+    _baseline_rollup = baseline_df.drop(columns=["Predicted APPS Raw"], errors="ignore").copy()
+    _baseline_rollup["Key"] = _baseline_rollup["Model_Key"]
+    _monthly_base = roll_up_weekly_forecast_to_monthly(_baseline_rollup)
+
+    if not _monthly_pred.empty and not _monthly_base.empty:
+        _merge_keys = ["Key", "State", "Calendar_Year", "Calendar_Month", "Channel", "H_Tactic", "Detail_Tactic"]
+        _merge_keys = [k for k in _merge_keys if k in _monthly_pred.columns and k in _monthly_base.columns]
+        _base_slim = (
+            _monthly_base[_merge_keys + ["Allocated_Predicted_APPS"]]
+            .rename(columns={"Allocated_Predicted_APPS": "_Baseline_raw"})
+        )
+        _monthly_pred = _monthly_pred.merge(_base_slim, on=_merge_keys, how="left")
+        _monthly_pred["Baseline APPS"] = _monthly_pred[["Allocated_Predicted_APPS", "_Baseline_raw"]].min(axis=1).clip(lower=0)
+        _monthly_pred["Incremental APPS"] = (
+            _monthly_pred["Allocated_Predicted_APPS"] - _monthly_pred["Baseline APPS"].fillna(0)
+        ).clip(lower=0)
+        _monthly_pred["Baseline_APPS_Rounded"]     = _monthly_pred["Baseline APPS"].round().astype("Int64")
+        _monthly_pred["Incremental_APPS_Rounded"]  = _monthly_pred["Incremental APPS"].round().astype("Int64")
+        _monthly_pred = _monthly_pred.drop(columns=["_Baseline_raw"])
+
+    st.session_state.monthly_df = _monthly_pred
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -970,21 +952,21 @@ if st.session_state.results_df is not None:
                 continue
             st.warning(
                 f"⚠️ No coefficient found for state **{r['State']}** "
-                f"(Week {r['ISO Week']}) — skipped."
+                f"(Week {r['ISO_Week']}) — skipped."
             )
+
+    _MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+                   7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
 
     if not ok_rows.empty:
         st.success(
             f"✅ {len(ok_rows)} prediction row(s) across "
-            f"{ok_rows[['State','ISO Year','ISO Week']].drop_duplicates().shape[0]} "
+            f"{ok_rows[['State','ISO_Year','ISO_Week']].drop_duplicates().shape[0]} "
             "state-week combination(s)"
         )
 
         # ── Output filters ────────────────────────────────────────────────────
         _ff1, _ff2, _ff3, _ff4, _ff5 = st.columns(5)
-
-        _MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
-                       7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
 
         # State (independent)
         _sel_st = _ff1.multiselect(
@@ -1047,7 +1029,7 @@ if st.session_state.results_df is not None:
 
         # ── Primary output table ──────────────────────────────────────────────
         primary_cols = [
-            "State", "ISO Year", "ISO Week", "Month",
+            "State", "ISO_Year", "ISO_Week", "Month",
             *SPEND_COLUMNS,
             "Channel", "H_Tactic", "Detail_Tactic", "Product",
             "Predicted APPS", "Baseline APPS", "Incremental APPS",
@@ -1059,11 +1041,12 @@ if st.session_state.results_df is not None:
                 _prod_format  = {"Allocated_Approved": "{:,}", "Allocated_Originations": "{:,}"}
             elif len(_sel_prod) == 1:
                 _pkey = _safe_col(_sel_prod[0])
-                primary_cols += [f"Applications_{_pkey}", f"Approvals_{_pkey}", f"Originations_{_pkey}"]
+                # Approvals are key-level (same for all products); Applications = Originations per product
+                primary_cols += [f"APPLICATIONS_{_pkey}", f"ORIGINATIONS_{_pkey}", "Allocated_Approved"]
                 _prod_format  = {
-                    f"Applications_{_pkey}": "{:,}",
-                    f"Approvals_{_pkey}":    "{:,}",
-                    f"Originations_{_pkey}": "{:,}",
+                    f"APPLICATIONS_{_pkey}": "{:,}",
+                    f"ORIGINATIONS_{_pkey}": "{:,}",
+                    "Allocated_Approved":    "{:,}",
                 }
             else:
                 primary_cols += ["Allocated_Approved", "Allocated_Originations"]
@@ -1098,11 +1081,11 @@ if st.session_state.results_df is not None:
 
     # Full export includes both primary + detail columns
     export_cols = [
-        "State", "ISO Year", "ISO Week", "Month",
+        "State", "ISO_Year", "ISO_Week", "Month",
         *SPEND_COLUMNS,
         "Channel", "H_Tactic", "Detail_Tactic", "Product",
         "Predicted APPS", "Baseline APPS", "Incremental APPS",
-        "Allocated_Approved", "Allocated_Originations", "raw_prediction",
+        "Allocated_Approved", "Allocated_Originations", "APPROVAL_Total", "Predicted APPS Raw",
         "95% Confidence Lower Limit", "95% Confidence Upper Limit",
         "time_index", "time_index_sq",
         "DSP_contrib", "LeadGen_contrib", "Paid_Search_contrib",
@@ -1128,6 +1111,148 @@ if st.session_state.results_df is not None:
             data=excel_bytes,
             file_name=f"predictions_{ts}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    # ── Monthly Rollup ────────────────────────────────────────────────────────
+    monthly_df = st.session_state.monthly_df
+    if monthly_df is not None and not monthly_df.empty:
+        # Keep only months where every day is covered by the forecast
+        _coverage = (
+            monthly_df.groupby(["State", "Calendar_Year", "Calendar_Month"], as_index=False)["Allocated_Days"]
+            .max()
+        )
+        _coverage["_days_in_month"] = _coverage.apply(
+            lambda r: _calendar.monthrange(int(r["Calendar_Year"]), int(r["Calendar_Month"]))[1],
+            axis=1,
+        )
+        _full_months = _coverage[_coverage["Allocated_Days"] >= _coverage["_days_in_month"]][
+            ["State", "Calendar_Year", "Calendar_Month"]
+        ]
+        monthly_df = monthly_df.merge(_full_months, on=["State", "Calendar_Year", "Calendar_Month"], how="inner")
+
+    if monthly_df is not None and not monthly_df.empty:
+        st.divider()
+        st.markdown("<div class='section-header'>📅 Monthly Rollup</div>", unsafe_allow_html=True)
+
+        _mf1, _mf2, _mf3, _mf4, _mf5 = st.columns(5)
+
+        # State (independent)
+        _sel_m_st = _mf1.multiselect(
+            "Filter by State",
+            sorted(monthly_df["State"].dropna().unique().tolist()),
+            key="monthly_filter_state",
+            placeholder="All states",
+        )
+
+        # Month (scoped to State)
+        _m_mo_base  = monthly_df if not _sel_m_st else monthly_df[monthly_df["State"].isin(_sel_m_st)]
+        _m_mo_nums  = sorted(_m_mo_base["Calendar_Month"].dropna().unique().astype(int).tolist())
+        _m_mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _m_mo_nums]
+        _m_mo_map    = dict(zip(_m_mo_labels, _m_mo_nums))
+        _sel_m_mo = _mf2.multiselect(
+            "Filter by Month",
+            _m_mo_labels,
+            key="monthly_filter_month",
+            placeholder="All months",
+        )
+
+        # Channel (scoped to State + Month)
+        _m_ch_base = _m_mo_base if not _sel_m_mo else _m_mo_base[_m_mo_base["Calendar_Month"].isin([_m_mo_map[m] for m in _sel_m_mo])]
+        _m_ch_opts = sorted(_m_ch_base["Channel"].dropna().unique().tolist()) if "Channel" in monthly_df.columns else []
+        _sel_m_ch = _mf3.multiselect(
+            "Filter by Channel",
+            _m_ch_opts,
+            key="monthly_filter_channel",
+            placeholder="All channels",
+        )
+
+        # H_Tactic (scoped to Channel)
+        _m_ht_base = _m_ch_base if not _sel_m_ch else _m_ch_base[_m_ch_base["Channel"].isin(_sel_m_ch)]
+        _m_ht_opts = sorted(_m_ht_base["H_Tactic"].dropna().unique().tolist()) if "H_Tactic" in monthly_df.columns else []
+        _sel_m_ht = _mf4.multiselect(
+            "Filter by H_Tactic",
+            _m_ht_opts,
+            key="monthly_filter_h_tactic",
+            placeholder="All",
+        )
+
+        # Detail_Tactic (scoped to H_Tactic)
+        _m_dt_base = _m_ht_base if not _sel_m_ht else _m_ht_base[_m_ht_base["H_Tactic"].isin(_sel_m_ht)]
+        _m_dt_opts = sorted(_m_dt_base["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in monthly_df.columns else []
+        _sel_m_dt = _mf5.multiselect(
+            "Filter by Detail_Tactic",
+            _m_dt_opts,
+            key="monthly_filter_detail_tactic",
+            placeholder="All",
+        )
+
+        # Product filter (column selector — not a row filter)
+        _sel_m_prod = []
+        if st.session_state.product_factors_df is not None:
+            _m_prod_col, _ = st.columns([1, 4])
+            _sel_m_prod = _m_prod_col.multiselect(
+                "Filter by Product Funded",
+                sorted(st.session_state.product_factors_df["PRODUCT_FUNDED"].dropna().astype(str).unique().tolist()),
+                key="monthly_filter_product", placeholder="All products",
+            )
+
+        m_display = monthly_df.copy()
+        if _sel_m_st: m_display = m_display[m_display["State"].isin(_sel_m_st)]
+        if _sel_m_mo: m_display = m_display[m_display["Calendar_Month"].isin([_m_mo_map[m] for m in _sel_m_mo])]
+        if _sel_m_ch: m_display = m_display[m_display["Channel"].isin(_sel_m_ch)]
+        if _sel_m_ht: m_display = m_display[m_display["H_Tactic"].isin(_sel_m_ht)]
+        if _sel_m_dt: m_display = m_display[m_display["Detail_Tactic"].isin(_sel_m_dt)]
+
+        monthly_primary_cols = [
+            "State", "Calendar_Year", "Calendar_Month",
+            "Channel", "H_Tactic", "Detail_Tactic",
+            "Allocated_Predicted_APPS_Rounded",
+            "Baseline_APPS_Rounded",
+            "Incremental_APPS_Rounded",
+        ]
+        monthly_fmt = {
+            "Allocated_Predicted_APPS_Rounded":  "{:,}",
+            "Baseline_APPS_Rounded":             "{:,}",
+            "Incremental_APPS_Rounded":          "{:,}",
+        }
+
+        if st.session_state.product_factors_df is not None:
+            if len(_sel_m_prod) == 1:
+                _m_pkey = _safe_col(_sel_m_prod[0])
+                _m_apps_col  = f"APPLICATIONS_{_m_pkey}"
+                _m_orig_col  = f"ORIGINATIONS_{_m_pkey}"
+                # Round on-the-fly — rollup stores these as floats
+                if _m_apps_col in m_display.columns:
+                    m_display[f"{_m_apps_col}_Rounded"] = m_display[_m_apps_col].round().astype("Int64")
+                    m_display[f"{_m_orig_col}_Rounded"] = m_display[_m_orig_col].round().astype("Int64")
+                    monthly_primary_cols += [f"{_m_apps_col}_Rounded", f"{_m_orig_col}_Rounded"]
+                    monthly_fmt[f"{_m_apps_col}_Rounded"] = "{:,}"
+                    monthly_fmt[f"{_m_orig_col}_Rounded"] = "{:,}"
+                monthly_primary_cols += ["Allocated_Approved_Rounded"]
+                monthly_fmt["Allocated_Approved_Rounded"] = "{:,}"
+            else:
+                monthly_primary_cols += ["Allocated_Approved_Rounded", "Allocated_Originations_Rounded"]
+                monthly_fmt["Allocated_Approved_Rounded"]     = "{:,}"
+                monthly_fmt["Allocated_Originations_Rounded"] = "{:,}"
+
+        monthly_primary_cols = [c for c in monthly_primary_cols if c in m_display.columns]
+
+        if m_display.empty:
+            st.info("No rows match the selected filters.")
+        else:
+            st.dataframe(
+                m_display[monthly_primary_cols].style.format(monthly_fmt, na_rep=""),
+                use_container_width=True,
+                height=min(400, 45 + len(m_display) * 35),
+                hide_index=True,
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.download_button(
+            label="⬇ Download Monthly as CSV",
+            data=m_display.to_csv(index=False).encode("utf-8"),
+            file_name=f"monthly_predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
         )
 
 
