@@ -920,14 +920,38 @@ if st.session_state.results_df is not None:
     st.divider()
     st.markdown("<div class='section-header'>📊 Predictions</div>", unsafe_allow_html=True)
 
-    # ── Warnings for missing coefficients (skip NaN/blank states) ───────────────
-    if not fail_rows.empty:
-        for _, r in fail_rows.iterrows():
-            if str(r["State"]).strip().lower() in ("nan", "none", ""):
-                continue
-            st.warning(
-                f"⚠️ No coefficient found for state **{r['State']}** "
-                f"(Week {r['ISO_Week']}) — skipped."
+    # ── Coverage issues expander ──────────────────────────────────────────────
+    _issue_rows = []
+
+    # States in input with no model
+    _real_fails = fail_rows[
+        ~fail_rows["State"].astype(str).str.strip().str.lower().isin(("nan", "none", ""))
+    ]
+    if not _real_fails.empty:
+        for _state, _grp in _real_fails.groupby("State"):
+            _issue_rows.append({
+                "State": _state,
+                "Issue": f"No model found — {len(_grp)} week(s) skipped",
+            })
+
+    # Model keys with no matching input data
+    if st.session_state.coeff_df is not None and "Key" in st.session_state.coeff_df.columns:
+        _input_states = set(results_df["State"].astype(str).unique())
+        _model_states = set(
+            st.session_state.coeff_df["Key"]
+            .dropna()
+            .apply(lambda k: _parse_key(str(k)).get("STATE_CD", ""))
+            .unique()
+        ) - {""}
+        for _s in sorted(_model_states - _input_states):
+            _issue_rows.append({"State": _s, "Issue": "Has a model but no spend data provided"})
+
+    if _issue_rows:
+        with st.expander(f"⚠️ {len(_issue_rows)} coverage issue(s)", expanded=False):
+            st.dataframe(
+                pd.DataFrame(_issue_rows),
+                use_container_width=True,
+                hide_index=True,
             )
 
     _MONTH_NAME = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
