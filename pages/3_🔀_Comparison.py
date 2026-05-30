@@ -438,20 +438,20 @@ with st.expander("Full comparison table"):
             continue
         _use_cols = [c for c in [_selected_apps_col, _approval_col, _origination_col] if c in _agg.columns]
         _ts = (
-            _agg.groupby(["Calendar_Year", "Calendar_Month", "Period"])[_use_cols]
+            _agg.groupby(["State", "Calendar_Year", "Calendar_Month", "Period"])[_use_cols]
             .sum().reset_index()
         )
         _ts["_sort"] = _ts["Calendar_Year"].astype(int) * 100 + _ts["Calendar_Month"].astype(int)
-        _ts = _ts.sort_values("_sort")[["Period"] + _use_cols].rename(columns={
+        _ts = _ts.sort_values(["State", "_sort"])[["State", "Period"] + _use_cols].rename(columns={
             _selected_apps_col: f"{_sc['name']} — Applications",
             _approval_col:      f"{_sc['name']} — Approvals",
             _origination_col:   f"{_sc['name']} — Originations",
         })
-        _parts.append(_ts.set_index("Period"))
+        _parts.append(_ts.set_index(["State", "Period"]))
 
     if _parts:
-        _wide    = pd.concat(_parts, axis=1).reset_index()
-        _num_cols = [c for c in _wide.columns if c != "Period"]
+        _wide     = pd.concat(_parts, axis=1).reset_index()
+        _num_cols = [c for c in _wide.columns if c not in ("State", "Period")]
         st.dataframe(
             _wide.style.format({c: "{:,.0f}" for c in _num_cols}, na_rep="—"),
             use_container_width=True,
