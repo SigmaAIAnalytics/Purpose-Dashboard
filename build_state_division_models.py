@@ -102,15 +102,8 @@ FUTURE_SPEND_RAW_REQUIRED_COLUMNS = [
     "STATE_CD",
     "TOTAL_COST",
 ]
-FUTURE_SPEND_OUTPUT_TACTICS = [
-    "DSP",
-    "LeadGen",
-    "Paid Search",
-    "Paid Social",
-    "Prescreen",
-    "Referrals",
-    "Sweepstakes",
-]
+FUTURE_SPEND_EXTRA_TACTICS = ["Sweepstakes"]
+FUTURE_SPEND_OUTPUT_TACTICS = list(NON_DUMMY_PREDICTORS) + FUTURE_SPEND_EXTRA_TACTICS
 
 
 def target_lag_col(target_col: str) -> str:
@@ -1787,10 +1780,7 @@ def roll_up_weekly_forecast_to_monthly(forecast_df: pd.DataFrame) -> pd.DataFram
                 allocation_row[metric_col] = float(metric_value) * prorate_factor if pd.notna(metric_value) else 0.0
             # Carry marginal columns through unchanged — they are rates
             # not counts, so they must NOT be multiplied by prorate_factor
-            MARGINAL_COLS = [
-                "Marginal_DSP", "Marginal_LeadGen", "Marginal_Paid_Search",
-                "Marginal_Paid_Social", "Marginal_Prescreen", "Marginal_Referrals",
-            ]
+            MARGINAL_COLS = [f"Marginal_{safe_name(t)}" for t in NON_DUMMY_PREDICTORS]
             for _mc in MARGINAL_COLS:
                 if _mc in row.index and pd.notna(row[_mc]):
                     allocation_row[_mc] = float(row[_mc])
@@ -2271,14 +2261,7 @@ def compute_marginals(
         Marginal_Paid_Social, Marginal_Prescreen, Marginal_Referrals.
         Values represent incremental predicted applications per $1,000.
     """
-    TACTIC_TO_MARGINAL_COL = {
-        "DSP":         "Marginal_DSP",
-        "LeadGen":     "Marginal_LeadGen",
-        "Paid Search": "Marginal_Paid_Search",
-        "Paid Social": "Marginal_Paid_Social",
-        "Prescreen":   "Marginal_Prescreen",
-        "Referrals":   "Marginal_Referrals",
-    }
+    TACTIC_TO_MARGINAL_COL = {t: f"Marginal_{safe_name(t)}" for t in NON_DUMMY_PREDICTORS}
 
     # Filter to OLS / weekly models only
     _coeff = coeff_df.copy()
@@ -2785,13 +2768,7 @@ def build_forecast_predictions_for_entity(
                 "ISO_Year": int(raw_future_row.iloc[0][YEAR_COL]),
                 "ISO_Week": int(raw_future_row.iloc[0][WEEK_COL]),
                 "Month": iso_week_month(int(raw_future_row.iloc[0][YEAR_COL]), int(raw_future_row.iloc[0][WEEK_COL])),
-                "DSP": float(raw_future_row.iloc[0].get("DSP", 0.0)),
-                "LeadGen": float(raw_future_row.iloc[0].get("LeadGen", 0.0)),
-                "Paid Search": float(raw_future_row.iloc[0].get("Paid Search", 0.0)),
-                "Paid Social": float(raw_future_row.iloc[0].get("Paid Social", 0.0)),
-                "Prescreen": float(raw_future_row.iloc[0].get("Prescreen", 0.0)),
-                "Referrals": float(raw_future_row.iloc[0].get("Referrals", 0.0)),
-                "Sweepstakes": float(raw_future_row.iloc[0].get("Sweepstakes", 0.0)),
+                **{col: float(raw_future_row.iloc[0].get(col, 0.0)) for col in FUTURE_SPEND_OUTPUT_TACTICS},
                 "Channel": future_output_value(raw_future_row.iloc[0], "CHANNEL_CD"),
                 "H_Tactic": future_output_value(raw_future_row.iloc[0], "H_TACTIC"),
                 "Detail_Tactic": future_output_value(raw_future_row.iloc[0], "DETAIL_TACTIC"),
@@ -2877,13 +2854,7 @@ def build_skipped_forecast_row(
                 "ISO_Year": np.nan,
                 "ISO_Week": np.nan,
                 "Month": np.nan,
-                "DSP": np.nan,
-                "LeadGen": np.nan,
-                "Paid Search": np.nan,
-                "Paid Social": np.nan,
-                "Prescreen": np.nan,
-                "Referrals": np.nan,
-                "Sweepstakes": np.nan,
+                **{col: np.nan for col in FUTURE_SPEND_OUTPUT_TACTICS},
                 "Channel": "",
                 "H_Tactic": "",
                 "Detail_Tactic": "",
