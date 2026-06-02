@@ -1,4 +1,4 @@
-"""Page 3: Scenario Comparison — multi-scenario APPS / Approvals / Originations."""
+"""Page 3: Scenario Comparison — multi-scenario APPS / Approvals / Funded."""
 from __future__ import annotations
 
 import calendar as _calendar
@@ -77,7 +77,7 @@ def _apply_grain_filter(df: pd.DataFrame, col: str, selected: list) -> pd.DataFr
 
 # ── Guard: session state must exist ───────────────────────────────────────────
 if "scenarios" not in st.session_state:
-    st.info("Open the Oracle page first to initialise the app.")
+    st.info("Open the Baseline page first to initialise the app.")
     st.stop()
 
 _active = [sc for sc in st.session_state.scenarios if sc.get("results_df") is not None]
@@ -87,13 +87,13 @@ st.markdown(
     "<h1 style='font-family:DM Serif Display,serif;font-size:2.1rem;margin-bottom:0;"
     "color:var(--text-color)'>🔀 Scenario Comparison</h1>"
     "<p style='color:var(--text-color);opacity:0.55;margin-top:0.1rem'>"
-    "Compare Applications, Approvals and Originations across scenarios</p>",
+    "Compare Applications, Approvals and Funded across scenarios</p>",
     unsafe_allow_html=True,
 )
 st.divider()
 
 if not _active:
-    st.info("No scenarios have been run yet. Go to Oracle and run at least the Baseline.")
+    st.info("No scenarios have been run yet. Go to Baseline and run at least the Baseline scenario.")
     st.stop()
 
 # ── Build combined frame for filter option discovery ───────────────────────────
@@ -258,7 +258,7 @@ for _ci, _sc in enumerate(_active):
             _orig_t = int(_agg[_origination_col].sum())   if _origination_col    in _agg.columns else None
             if _apps_t is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
             if _appr_t is not None: st.metric("Likely Approvals",       f"{_appr_t:,}")
-            if _orig_t is not None: st.metric("Likely Originations",    f"{_orig_t:,}")
+            if _orig_t is not None: st.metric("Likely Funded",           f"{_orig_t:,}")
 
 st.markdown("---")
 
@@ -290,7 +290,7 @@ for _ci, _sc in enumerate(_active):
                 key=f"cmp_appr_rate_{_ci}",
             )
             st.number_input(
-                "Origination Rate (%)", min_value=0.0, max_value=100.0,
+                "Funding Rate (%)", min_value=0.0, max_value=100.0,
                 value=float(round(_rd["model_orig"] * 100)), step=1.0, format="%.0f",
                 key=f"cmp_orig_rate_{_ci}",
             )
@@ -425,7 +425,7 @@ def _make_chart(
 
 st.plotly_chart(_make_chart("Predicted Applications", _selected_apps_col, _global_ymax, _spend_series), use_container_width=True)
 st.plotly_chart(_make_chart("Likely Approvals",       _approval_col,       _global_ymax), use_container_width=True)
-st.plotly_chart(_make_chart("Likely Originations",    _origination_col,    _global_ymax), use_container_width=True)
+st.plotly_chart(_make_chart("Likely Funded",           _origination_col,    _global_ymax), use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Full comparison table + download
@@ -445,7 +445,7 @@ with st.expander("Full comparison table"):
         _ts = _ts.sort_values(["State", "_sort"])[["State", "Period"] + _use_cols].rename(columns={
             _selected_apps_col: f"{_sc['name']} — Applications",
             _approval_col:      f"{_sc['name']} — Approvals",
-            _origination_col:   f"{_sc['name']} — Originations",
+            _origination_col:   f"{_sc['name']} — Funded",
         })
         _parts.append(_ts.set_index(["State", "Period"]))
 
