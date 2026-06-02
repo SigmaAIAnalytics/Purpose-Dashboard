@@ -1078,22 +1078,16 @@ if _active_scens:
             key="monthly_filter_month",
             placeholder="All months",
         )
-        _ch_opts = ["--Default--"] + (
-            sorted(_all_monthly["Channel"].dropna().unique().tolist()) if "Channel" in _all_monthly.columns else []
-        )
-        _ht_opts = ["--Default--"] + (
-            sorted(_all_monthly["H_Tactic"].dropna().unique().tolist()) if "H_Tactic" in _all_monthly.columns else []
-        )
-        _dt_opts = ["--Default--"] + (
-            sorted(_all_monthly["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _all_monthly.columns else []
-        )
+        _ch_opts = sorted(_all_monthly["Channel"].dropna().unique().tolist()) if "Channel" in _all_monthly.columns else []
+        _ht_opts = sorted(_all_monthly["H_Tactic"].dropna().unique().tolist()) if "H_Tactic" in _all_monthly.columns else []
+        _dt_opts = sorted(_all_monthly["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _all_monthly.columns else []
         _sel_m_ch = _mf3.multiselect("Channel",       _ch_opts, key="monthly_filter_channel",       placeholder="All")
         _sel_m_ht = _mf4.multiselect("H_Tactic",      _ht_opts, key="monthly_filter_h_tactic",      placeholder="All")
         _sel_m_dt = _mf5.multiselect("Detail_Tactic", _dt_opts, key="monthly_filter_detail_tactic", placeholder="All")
 
         _pf_data  = st.session_state.product_factors_df
         _prod_opts = (
-            sorted(_pf_data["PRODUCT_FUNDED"].dropna().unique().tolist())
+            sorted(v for v in _pf_data["PRODUCT_FUNDED"].dropna().unique() if v != "Not Funded")
             if _pf_data is not None and not _pf_data.empty else []
         )
         if _prod_opts:
@@ -1126,19 +1120,44 @@ if _active_scens:
             _mdf = _apply_grain_filter(_mdf, "Channel",       _sel_m_ch)
             _mdf = _apply_grain_filter(_mdf, "H_Tactic",      _sel_m_ht)
             _mdf = _apply_grain_filter(_mdf, "Detail_Tactic", _sel_m_dt)
-            if _sel_prod and _pf_data is not None and not _pf_data.empty:
-                _pf_sel = (
-                    _pf_data[_pf_data["PRODUCT_FUNDED"].isin(_sel_prod)]
-                    .groupby("Key", as_index=False)["APPLICATION_SHARE"].sum()
+            if _pf_data is not None and not _pf_data.empty:
+                _mdf = _mdf.merge(
+                    _pf_data[["Key", "PRODUCT_FUNDED", "APPLICATION_SHARE"]],
+                    on="Key", how="left"
                 )
-                _mdf = _mdf.merge(_pf_sel, on="Key", how="left")
-                _share = _mdf["APPLICATION_SHARE"].fillna(0)
-                for _oc in [c for c in _orig_rounded_cols if c in _mdf.columns]:
-                    _mdf[_oc] = (_mdf[_oc].astype(float) * _share).round().astype("Int64")
+                _share = _mdf["APPLICATION_SHARE"].fillna(1.0)
+                for _mc in [c for c in _all_agg_cols if c in _mdf.columns]:
+                    _mdf[_mc] = (_mdf[_mc].astype(float) * _share).round().astype("Int64")
                 _mdf = _mdf.drop(columns=["APPLICATION_SHARE"])
+                if _sel_prod:
+                    _mdf = _mdf[_mdf["PRODUCT_FUNDED"].isin(_sel_prod)]
             _agg_cols_present = [c for c in _all_agg_cols if c in _mdf.columns]
-            _grain_keys = [c for c in ["Channel", "H_Tactic", "Detail_Tactic"] if c in _mdf.columns]
+            _grain_keys = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in _mdf.columns]
             _agg = _mdf.groupby(["State", "Calendar_Year", "Calendar_Month"] + _grain_keys, as_index=False)[_agg_cols_present].sum()
+
+            if "PRODUCT_FUNDED" in _agg.columns and (_agg["PRODUCT_FUNDED"] == "Not Funded").any():
+                _key_dims    = [c for c in ["State", "Calendar_Year", "Calendar_Month", "Channel", "H_Tactic", "Detail_Tactic"] if c in _agg.columns]
+                _redist_cols = [c for c in _agg_cols_present if c in _agg.columns]
+                _is_nf       = _agg["PRODUCT_FUNDED"] == "Not Funded"
+                _nf_rows     = _agg[_is_nf][_key_dims + _redist_cols]
+                _f_rows      = _agg[~_is_nf].copy()
+                if not _f_rows.empty:
+                    _nf_totals = _nf_rows.groupby(_key_dims, as_index=False)[_redist_cols].sum()
+                    _nf_totals = _nf_totals.rename(columns={c: f"_nf_{c}" for c in _redist_cols})
+                    _f_rows = _f_rows.merge(_nf_totals, on=_key_dims, how="left")
+                    for _rc in _redist_cols:
+                        _nf_col = f"_nf_{_rc}"
+                        if _nf_col not in _f_rows.columns:
+                            continue
+                        _grp_total = _f_rows.groupby(_key_dims)[_rc].transform("sum").replace(0, np.nan)
+                        _prop      = _f_rows[_rc].astype(float) / _grp_total
+                        _f_rows[_rc] = (
+                            _f_rows[_rc].astype(float)
+                            + (_prop * _f_rows[_nf_col].fillna(0)).fillna(0)
+                        ).round().astype("Int64")
+                    _f_rows = _f_rows.drop(columns=[c for c in _f_rows.columns if c.startswith("_nf_")])
+                _agg = _f_rows
+
             _agg["Period"] = (
                 _agg["Calendar_Month"].astype(int).map(_MONTH_NAME)
                 + " " + _agg["Calendar_Year"].astype(int).astype(str)
@@ -1205,12 +1224,12 @@ if _active_scens:
                 if _has_orig_data:
                     _mcols[_orig_idx].markdown(
                         f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
-                        f"Funding Rate: <strong>{_blended_orig_rate * 100:.0f}%</strong></div>",
+                        f"Conversion Rate: <strong>{_blended_orig_rate * 100:.0f}%</strong></div>",
                         unsafe_allow_html=True,
                     )
             if _spend_total is not None:
                 _spend_idx = 1 + (1 if _appr_total is not None else 0) + (1 if _orig_total is not None else 0)
-                _grain_active = any([_sel_m_ch, _sel_m_ht, _sel_m_dt])
+                _grain_active = any([_sel_m_ch, _sel_m_ht, _sel_m_dt, _sel_prod])
                 _mcols[_spend_idx].metric("Total Spend (@ State/Month only)", "N/A" if _grain_active else _fmt_spend(_spend_total))
                 if _grain_active:
                     _cpf_label = "Not Calculated"
@@ -1224,9 +1243,9 @@ if _active_scens:
                     unsafe_allow_html=True,
                 )
 
-            _grain_cols = [c for c in ["Channel", "H_Tactic", "Detail_Tactic"] if c in m_display.columns]
+            _grain_cols = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in m_display.columns]
             _monthly_primary_cols = ["State", "Period"] + _grain_cols
-            _col_rename = {}
+            _col_rename = {"PRODUCT_FUNDED": "Product"} if "PRODUCT_FUNDED" in _grain_cols else {}
             if _display_apps_col:
                 _monthly_primary_cols.append(_display_apps_col)
                 _col_rename[_display_apps_col] = "Predicted Applications"
