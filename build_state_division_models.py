@@ -697,6 +697,15 @@ def build_product_allocation_factors(
     if frame.empty:
         return pd.DataFrame()
 
+    week_dates = pd.to_datetime(
+        frame[YEAR_COL].astype(str) + "-W" + frame[WEEK_COL].astype(str).str.zfill(2) + "-1",
+        format="%G-W%V-%u",
+    )
+    cutoff_date = week_dates.max() - pd.DateOffset(months=3)
+    frame = frame[week_dates >= cutoff_date].copy()
+    if frame.empty:
+        return pd.DataFrame()
+
     grouping_keys = list(dict.fromkeys([STATE_COL, *dataset_group_by]))
     weekly_group_cols = [*grouping_keys, YEAR_COL, WEEK_COL]
     detail = (
