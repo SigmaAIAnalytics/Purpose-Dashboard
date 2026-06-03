@@ -246,50 +246,6 @@ with _fl2:
 
 st.divider()
 
-# ── Pipeline configuration ────────────────────────────────────────────────────
-st.markdown("## Adding New Marketing Tactics")
-st.markdown(
-    "The modeling pipeline reads which marketing tactics to include from "
-    "`model_config.json`, a configuration file that lives alongside the modeling "
-    "code. When a new tactic is introduced in the data, update that file and "
-    "retrain — no Python changes are needed."
-)
-
-_cfg1, _cfg2 = st.columns(2)
-with _cfg1:
-    st.markdown("**`model_config.json` — example**")
-    st.code(
-        '{\n  "media_predictors": [\n    "DSP",\n    "LeadGen",\n'
-        '    "Paid Search",\n    "Paid Social",\n    "Prescreen",\n'
-        '    "Referrals",\n    "Email"\n  ]\n}',
-        language="json",
-    )
-with _cfg2:
-    st.markdown("**How it works**")
-    st.markdown(
-        "- `build_state_division_models.py` reads `model_config.json` at startup\n"
-        "- The `media_predictors` list drives required-column validation, "
-        "model design matrices, future spend prep, and forecast output columns\n"
-        "- If the file is absent or malformed, the pipeline falls back to the "
-        "six default tactics: DSP, LeadGen, Paid Search, Paid Social, Prescreen, Referrals\n"
-        "- After editing the config, retrain the model and reload "
-        "`modelcoeff_and_prodfactors.csv` in the app — new tactic columns "
-        "appear automatically"
-    )
-
-st.markdown(
-    """
-    <div class='info-card'>
-        <strong>Note</strong> — the config controls the <em>modeling pipeline</em> (training).
-        The Oracle app reads tactic columns directly from the uploaded model file, so it
-        adapts to whatever tactics the retrained model contains without any separate update.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.divider()
-
 # ── Pages overview ────────────────────────────────────────────────────────────
 st.markdown("## Pages")
 
