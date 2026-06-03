@@ -479,7 +479,7 @@ def _score_coeff_row(
 
     return {
         "Predicted APPS":               max(0, int(round(prediction))),
-        "Predicted APPS Raw":           round(prediction, 6),
+        "Predicted APPS Raw":           max(0.0, round(prediction, 6)),
         "95% Confidence Lower Limit":   int(round(lower_ci)),
         "95% Confidence Upper Limit":   int(round(upper_ci)),
         "time_index":                   time_index,
