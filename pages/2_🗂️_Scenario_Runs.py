@@ -22,8 +22,8 @@ from botocore.client import Config as _BotoConfig
 from build_state_division_models import roll_up_weekly_forecast_to_monthly, spread_monthly_spend_to_weekly
 
 st.set_page_config(
-    page_title="Baseline — Oracle",
-    page_icon="🎯",
+    page_title="Scenario Runs — Oracle",
+    page_icon="🗂️",
     layout="wide",
 )
 
@@ -702,6 +702,252 @@ def _full_month_filter(monthly_df: pd.DataFrame) -> pd.DataFrame:
     return monthly_df.merge(_full, on=["State", "Calendar_Year", "Calendar_Month"], how="inner")
 
 
+def _fmt_spend(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.1f}MM"
+    if v >= 1_000:
+        return f"${v / 1_000:.1f}K"
+    return f"${v:.0f}"
+
+
+# ── Per-scenario results renderer ─────────────────────────────────────────────
+def _render_results(sc: dict, sc_idx: int, pf_data) -> None:
+    """Render the predictions output section for a single scenario."""
+    if sc["monthly_df"] is None or sc["monthly_df"].empty:
+        return
+
+    st.divider()
+    st.markdown("<div class='section-header'>📊 Predictions</div>", unsafe_allow_html=True)
+
+    # Coverage issues
+    if sc["results_df"] is not None:
+        _issue_rows = []
+        _fail_rows  = sc["results_df"][sc["results_df"]["Model_Status"] != "OK"]
+        _real_fails = _fail_rows[
+            ~_fail_rows["State"].astype(str).str.strip().str.lower().isin(("nan", "none", ""))
+        ]
+        if not _real_fails.empty:
+            for _state, _grp in _real_fails.groupby("State"):
+                _issue_rows.append({"State": _state, "Issue": f"No model found — {len(_grp)} week(s) skipped"})
+        if st.session_state.coeff_df is not None and "Key" in st.session_state.coeff_df.columns:
+            _input_states = set(sc["results_df"]["State"].astype(str).unique())
+            _model_states = set(
+                st.session_state.coeff_df["Key"].dropna()
+                .apply(lambda k: _parse_key(str(k)).get("STATE_CD", "")).unique()
+            ) - {""}
+            for _s in sorted(_model_states - _input_states):
+                _issue_rows.append({"State": _s, "Issue": "Has a model but no spend data provided"})
+        if _issue_rows:
+            with st.expander(f"⚠️ {len(_issue_rows)} coverage issue(s)", expanded=False):
+                st.dataframe(pd.DataFrame(_issue_rows), use_container_width=True, hide_index=True)
+
+    _fm = _full_month_filter(sc["monthly_df"])
+    if _fm is None or _fm.empty:
+        st.info("No full-month data available.")
+        return
+
+    # Filter bar — unique keys per scenario via sc_idx prefix
+    _kp = f"sc{sc_idx}"
+    _f1, _f2, _f3, _f4, _f5 = st.columns(5)
+
+    _sel_st = _f1.multiselect(
+        "Filter by State",
+        sorted(_fm["State"].dropna().unique().tolist()),
+        key=f"{_kp}_fst", placeholder="All states",
+    )
+    _mo_base   = _fm if not _sel_st else _fm[_fm["State"].isin(_sel_st)]
+    _mo_nums   = sorted(_mo_base["Calendar_Month"].dropna().unique().astype(int).tolist())
+    _mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _mo_nums]
+    _mo_map    = dict(zip(_mo_labels, _mo_nums))
+    _sel_mo    = _f2.multiselect("Filter by Month", _mo_labels, key=f"{_kp}_fmo", placeholder="All months")
+
+    _ch_opts = sorted(_fm["Channel"].dropna().unique().tolist())       if "Channel"       in _fm.columns else []
+    _ht_opts = sorted(_fm["H_Tactic"].dropna().unique().tolist())      if "H_Tactic"      in _fm.columns else []
+    _dt_opts = sorted(_fm["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _fm.columns else []
+    _sel_ch = _f3.multiselect("Channel",       _ch_opts, key=f"{_kp}_fch", placeholder="All")
+    _sel_ht = _f4.multiselect("H_Tactic",      _ht_opts, key=f"{_kp}_fht", placeholder="All")
+    _sel_dt = _f5.multiselect("Detail_Tactic", _dt_opts, key=f"{_kp}_fdt", placeholder="All")
+
+    _prod_opts = (
+        sorted(v for v in pf_data["PRODUCT_FUNDED"].dropna().unique() if v != "Not Funded")
+        if pf_data is not None and not pf_data.empty else []
+    )
+    _sel_prod: list = []
+    if _prod_opts:
+        _pf_col, _ = st.columns([2, 3])
+        _sel_prod = _pf_col.multiselect(
+            "Filter by Product", _prod_opts, key=f"{_kp}_fprod", placeholder="All products"
+        )
+
+    # Column maps (view hardcoded to All; add toggle here later if needed)
+    _view = "All"
+    _apps_col_map = {"All": "Allocated_Predicted_APPS_Rounded", "Baseline": "Baseline_APPS_Rounded",    "Incremental": "Incremental_APPS_Rounded"}
+    _appr_col_map = {"All": "Allocated_Approved_Rounded",       "Baseline": "Baseline_Approved_Rounded", "Incremental": "Incremental_Approved_Rounded"}
+    _orig_col_map = {"All": "Allocated_Originations_Rounded",   "Baseline": "Baseline_Originations_Rounded", "Incremental": "Incremental_Originations_Rounded"}
+    _selected_apps_col = _apps_col_map[_view]
+    _approval_col      = _appr_col_map[_view]
+    _origination_col   = _orig_col_map[_view]
+    _all_agg_cols      = list(_apps_col_map.values()) + list(_appr_col_map.values()) + list(_orig_col_map.values())
+
+    # Apply filters
+    _mdf = _fm.copy()
+    if _sel_st: _mdf = _mdf[_mdf["State"].isin(_sel_st)]
+    if _sel_mo: _mdf = _mdf[_mdf["Calendar_Month"].isin([_mo_map[m] for m in _sel_mo])]
+    _mdf = _apply_grain_filter(_mdf, "Channel",       _sel_ch)
+    _mdf = _apply_grain_filter(_mdf, "H_Tactic",      _sel_ht)
+    _mdf = _apply_grain_filter(_mdf, "Detail_Tactic", _sel_dt)
+
+    if pf_data is not None and not pf_data.empty:
+        _mdf = _mdf.merge(
+            pf_data[["Key", "PRODUCT_FUNDED", "APPLICATION_SHARE"]], on="Key", how="left"
+        )
+        _share = _mdf["APPLICATION_SHARE"].fillna(1.0)
+        for _mc in [c for c in _all_agg_cols if c in _mdf.columns]:
+            _mdf[_mc] = (_mdf[_mc].astype(float) * _share).round().astype("Int64")
+        _mdf = _mdf.drop(columns=["APPLICATION_SHARE"])
+        if _sel_prod:
+            _mdf = _mdf[_mdf["PRODUCT_FUNDED"].isin(_sel_prod)]
+
+    _agg_cols_present = [c for c in _all_agg_cols if c in _mdf.columns]
+    _grain_keys = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in _mdf.columns]
+    _agg = _mdf.groupby(
+        ["State", "Calendar_Year", "Calendar_Month"] + _grain_keys, as_index=False
+    )[_agg_cols_present].sum()
+
+    # Not Funded redistribution
+    if "PRODUCT_FUNDED" in _agg.columns and (_agg["PRODUCT_FUNDED"] == "Not Funded").any():
+        _key_dims    = [c for c in ["State", "Calendar_Year", "Calendar_Month", "Channel", "H_Tactic", "Detail_Tactic"] if c in _agg.columns]
+        _redist_cols = [c for c in _agg_cols_present if c in _agg.columns]
+        _is_nf       = _agg["PRODUCT_FUNDED"] == "Not Funded"
+        _nf_rows     = _agg[_is_nf][_key_dims + _redist_cols]
+        _f_rows      = _agg[~_is_nf].copy()
+        if not _f_rows.empty:
+            _nf_totals = _nf_rows.groupby(_key_dims, as_index=False)[_redist_cols].sum()
+            _nf_totals = _nf_totals.rename(columns={c: f"_nf_{c}" for c in _redist_cols})
+            _f_rows = _f_rows.merge(_nf_totals, on=_key_dims, how="left")
+            for _rc in _redist_cols:
+                _nf_col = f"_nf_{_rc}"
+                if _nf_col not in _f_rows.columns:
+                    continue
+                _grp_total = _f_rows.groupby(_key_dims)[_rc].transform("sum").replace(0, np.nan)
+                _prop      = _f_rows[_rc].astype(float) / _grp_total
+                _f_rows[_rc] = (
+                    _f_rows[_rc].astype(float)
+                    + (_prop * _f_rows[_nf_col].fillna(0)).fillna(0)
+                ).round().astype("Int64")
+            _f_rows = _f_rows.drop(columns=[c for c in _f_rows.columns if c.startswith("_nf_")])
+        _agg = _f_rows
+
+    _agg["Period"] = (
+        _agg["Calendar_Month"].astype(int).map(_MONTH_NAME)
+        + " " + _agg["Calendar_Year"].astype(int).astype(str)
+    )
+    m_display = _agg
+
+    if m_display.empty:
+        st.info("No rows match the selected filters.")
+        return
+
+    # Metric cards
+    _appr_apps_sum = int(m_display["Allocated_Predicted_APPS_Rounded"].sum()) if "Allocated_Predicted_APPS_Rounded" in m_display.columns else 0
+    _has_appr_data = _approval_col in m_display.columns and _appr_apps_sum > 0
+    _appr_sum      = m_display[_approval_col].sum() if _approval_col in m_display.columns else 0
+    _has_orig_data = _origination_col in m_display.columns and _appr_sum > 0
+    _blended_appr_rate = _appr_sum / _appr_apps_sum if _has_appr_data else 0.0
+    _blended_orig_rate = m_display[_origination_col].sum() / _appr_sum if _has_orig_data else 0.0
+
+    _display_apps_col = _selected_apps_col if _selected_apps_col in m_display.columns else None
+    _has_approved     = _approval_col    in m_display.columns
+    _has_originated   = _origination_col in m_display.columns
+
+    _apps_total = int(m_display[_display_apps_col].sum()) if _display_apps_col else 0
+    _appr_total = int(m_display[_approval_col].sum())     if _has_approved     else None
+    _orig_total = int(m_display[_origination_col].sum())  if _has_originated   else None
+
+    _snap = sc.get("input_snap")
+    _spend_total = None
+    if _snap is not None and not _snap.empty:
+        _sp = _snap.copy()
+        _sp["_date"]      = pd.to_datetime(_sp["Date"], errors="coerce")
+        _sp["_month_num"] = _sp["_date"].dt.month
+        if _sel_st: _sp = _sp[_sp["State"].isin(_sel_st)]
+        if _sel_mo: _sp = _sp[_sp["_month_num"].isin([_mo_map[m] for m in _sel_mo])]
+        _spend_total = _sp[SPEND_COLUMNS].sum().sum()
+
+    _n_mc  = 1 + (1 if _appr_total is not None else 0) + (1 if _orig_total is not None else 0) + (1 if _spend_total is not None else 0)
+    _mcols = st.columns(_n_mc)
+    _mcols[0].metric("Predicted Applications", f"{_apps_total:,}")
+    if _appr_total is not None:
+        _mcols[1].metric("Likely Approvals", f"{_appr_total:,}")
+        if _has_appr_data:
+            _mcols[1].markdown(
+                f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
+                f"Approval Rate: <strong>{_blended_appr_rate * 100:.0f}%</strong></div>",
+                unsafe_allow_html=True,
+            )
+    if _orig_total is not None:
+        _orig_idx = 1 + (1 if _appr_total is not None else 0)
+        _mcols[_orig_idx].metric("Likely Funded", f"{_orig_total:,}")
+        if _has_orig_data:
+            _mcols[_orig_idx].markdown(
+                f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
+                f"Conversion Rate: <strong>{_blended_orig_rate * 100:.0f}%</strong></div>",
+                unsafe_allow_html=True,
+            )
+    if _spend_total is not None:
+        _spend_idx = 1 + (1 if _appr_total is not None else 0) + (1 if _orig_total is not None else 0)
+        _grain_active = any([_sel_ch, _sel_ht, _sel_dt, _sel_prod])
+        _mcols[_spend_idx].metric(
+            "Total Spend (@ State/Month only)",
+            "N/A" if _grain_active else _fmt_spend(_spend_total),
+        )
+        if _grain_active:
+            _cpf_label = "Not Calculated"
+        elif _orig_total and _orig_total > 0:
+            _cpf_label = _fmt_spend(_spend_total / _orig_total)
+        else:
+            _cpf_label = "—"
+        _mcols[_spend_idx].markdown(
+            f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
+            f"CPF (per State/Month): <strong>{_cpf_label}</strong></div>",
+            unsafe_allow_html=True,
+        )
+
+    # Results table
+    _grain_cols = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in m_display.columns]
+    _monthly_primary_cols = ["State", "Period"] + _grain_cols
+    _col_rename = {"PRODUCT_FUNDED": "Product"} if "PRODUCT_FUNDED" in _grain_cols else {}
+    if _display_apps_col:
+        _monthly_primary_cols.append(_display_apps_col)
+        _col_rename[_display_apps_col] = "Predicted Applications"
+    if _has_approved:
+        _monthly_primary_cols.append(_approval_col)
+        _col_rename[_approval_col] = "Likely Approvals"
+    if _has_originated:
+        _monthly_primary_cols.append(_origination_col)
+        _col_rename[_origination_col] = "Likely Funded"
+    _monthly_fmt   = {c: "{:,}" for c in _monthly_primary_cols if c not in ["State", "Period"] + _grain_cols}
+    _display_slice = m_display[_monthly_primary_cols].rename(columns=_col_rename)
+    _display_fmt   = {_col_rename.get(c, c): fmt for c, fmt in _monthly_fmt.items()}
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.dataframe(
+        _display_slice.style.format(_display_fmt, na_rep=""),
+        use_container_width=True,
+        height=min(400, 45 + len(m_display) * 35),
+        hide_index=True,
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.download_button(
+        label="⬇ Download Monthly as CSV",
+        data=m_display.to_csv(index=False).encode("utf-8"),
+        file_name=f"monthly_predictions_{sc['name'].replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        key=f"dl_monthly_{sc_idx}",
+    )
+
+
 # ── Session state init ────────────────────────────────────────────────────────
 if "coeff_df"           not in st.session_state: st.session_state.coeff_df           = None
 if "coeff_source"       not in st.session_state: st.session_state.coeff_source        = None
@@ -724,6 +970,12 @@ def _blank_scenario(name: str) -> dict:
 
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = [_blank_scenario(n) for n in _SCENARIO_NAMES]
+
+# Sync scenario names from widget state so sidebar labels are always current
+for _si in range(1, 4):
+    _nk = f"sc_name_{_si}"
+    if _nk in st.session_state:
+        st.session_state.scenarios[_si]["name"] = st.session_state[_nk] or f"Scenario {_si}"
 
 # ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
 if st.session_state.coeff_df is None:
@@ -754,9 +1006,10 @@ if _sc0["upload_df"] is None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR — Model file uploader
+# SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
+    # ── Model file ────────────────────────────────────────────────────────────
     _m_loaded    = st.session_state.coeff_df is not None
     _m_key_count = (
         len(st.session_state.coeff_df["Key"].dropna())
@@ -788,103 +1041,48 @@ with st.sidebar:
                 st.error(str(e))
 
     st.markdown("---")
-    st.markdown("## 🗂 Scenarios")
+    st.markdown("## 📂 Upload Scenario Files")
 
-    # ── Baseline status + file upload ─────────────────────────────────────────
-    _sb_sc0 = st.session_state.scenarios[0]
-    with st.expander("Baseline", expanded=False):
-        if _sb_sc0["results_df"] is not None:
-            _sb_total = (
-                int(_sb_sc0["monthly_df"]["Allocated_Predicted_APPS_Rounded"].sum())
-                if _sb_sc0["monthly_df"] is not None
-                and "Allocated_Predicted_APPS_Rounded" in _sb_sc0["monthly_df"].columns
-                else None
-            )
-            st.success(f"✅ Predicted — {_sb_total:,} APPS" if _sb_total is not None else "✅ Predictions ready")
-        elif _sb_sc0["upload_df"] is not None:
-            st.info(f"Spend loaded ({len(_sb_sc0['upload_df'])} rows) — edit table and run below")
-        else:
-            st.info("Upload a file or fill the table in the main area below")
-        st.caption("Upload spend data (CSV or Excel) to populate the table:")
-        _sb_input = st.file_uploader(
-            "Spend file", type=["csv", "xlsx"],
-            key="input_uploader", label_visibility="collapsed",
-        )
-        if _sb_input is not None and _sb_input.name != _sb_sc0["last_input_name"]:
-            try:
-                _sb_raw = (
-                    pd.read_csv(_sb_input)
-                    if _sb_input.name.endswith(".csv")
-                    else pd.read_excel(_sb_input)
-                )
-                _sb_parsed = _normalise_upload(_sb_raw)
-                _sb_sc0["upload_df"]       = _sb_parsed
-                _sb_sc0["last_input_name"] = _sb_input.name
-                _sb_sc0["upload_version"] += 1
-                st.success(f"✅ {len(_sb_parsed)} rows loaded")
-            except Exception as _sb_e:
-                st.error(str(_sb_e))
-
-    # ── Scenarios 1–3 ─────────────────────────────────────────────────────────
-    for _si in range(1, 4):
-        _sc = st.session_state.scenarios[_si]
-        _name_key = f"sc_name_{_si}"
-        if _name_key not in st.session_state:
-            st.session_state[_name_key] = _sc["name"]
-
-        _sc_label = st.session_state[_name_key] or f"Scenario {_si}"
+    # ── One expander per scenario — upload only, no Run button ───────────────
+    for _si, _sc in enumerate(st.session_state.scenarios):
         _sc_icon  = "✅ " if _sc["results_df"] is not None else ("📂 " if _sc["upload_df"] is not None else "")
+        _sc_label = _sc["name"]
 
-        with st.expander(
-            f"{_sc_icon}{_sc_label}",
-            expanded=(_sc["upload_df"] is not None and _sc["results_df"] is None),
-        ):
-            _new_name = st.text_input("Name", key=_name_key, placeholder=f"Scenario {_si}")
-            _sc["name"] = _new_name or f"Scenario {_si}"
+        with st.expander(f"{_sc_icon}{_sc_label}", expanded=False):
+            if _sc["results_df"] is not None:
+                _sb_total = (
+                    int(_sc["monthly_df"]["Allocated_Predicted_APPS_Rounded"].sum())
+                    if _sc["monthly_df"] is not None
+                    and "Allocated_Predicted_APPS_Rounded" in _sc["monthly_df"].columns
+                    else None
+                )
+                st.success(f"✅ Predicted — {_sb_total:,} APPS" if _sb_total is not None else "✅ Predictions ready")
+            elif _sc["upload_df"] is not None:
+                st.info(f"Spend loaded ({len(_sc['upload_df'])} rows) — run predictions in the tab")
+            else:
+                st.info("Upload a file or fill the table in the tab")
 
-            st.caption("Spend CSV or Excel (same format as baseline)")
-            _sc_up = st.file_uploader(
+            st.caption("Upload spend data (CSV or Excel) to populate the table:")
+            _sb_up = st.file_uploader(
                 "Spend file",
                 type=["csv", "xlsx"],
-                key=f"sc_upload_{_si}",
+                key=f"sb_upload_{_si}",
                 label_visibility="collapsed",
             )
-            if _sc_up is not None and _sc_up.name != _sc["last_input_name"]:
+            if _sb_up is not None and _sb_up.name != _sc["last_input_name"]:
                 try:
-                    _sc_raw = (
-                        pd.read_csv(_sc_up)
-                        if _sc_up.name.endswith(".csv")
-                        else pd.read_excel(_sc_up)
+                    _sb_raw = (
+                        pd.read_csv(_sb_up)
+                        if _sb_up.name.endswith(".csv")
+                        else pd.read_excel(_sb_up)
                     )
-                    _sc["upload_df"]       = _normalise_upload(_sc_raw)
-                    _sc["last_input_name"] = _sc_up.name
+                    _sb_parsed = _normalise_upload(_sb_raw)
+                    _sc["upload_df"]       = _sb_parsed
+                    _sc["last_input_name"] = _sb_up.name
                     _sc["upload_version"] += 1
-                    st.success(f"✅ {len(_sc['upload_df'])} rows loaded")
-                except Exception as _sc_e:
-                    st.error(str(_sc_e))
-
-            if _sc["upload_df"] is not None:
-                if _sc["results_df"] is not None:
-                    _sc_total = (
-                        int(_sc["monthly_df"]["Allocated_Predicted_APPS_Rounded"].sum())
-                        if _sc["monthly_df"] is not None
-                        and "Allocated_Predicted_APPS_Rounded" in _sc["monthly_df"].columns
-                        else None
-                    )
-                    if _sc_total is not None:
-                        st.caption(f"Last run: {_sc_total:,} APPS")
-                if st.button(f"▶ Run {_sc['name']}", key=f"sc_run_{_si}", use_container_width=True):
-                    if st.session_state.coeff_df is None:
-                        st.error("Upload model file first.")
-                    else:
-                        with st.spinner(f"Running {_sc['name']}…"):
-                            _sc_res, _sc_mon = run_scenario(_sc["upload_df"], st.session_state.coeff_df)
-                        _sc["results_df"] = _sc_res
-                        _sc["monthly_df"] = _sc_mon
-                        _sc["input_snap"] = _sc["upload_df"].copy()
-                        st.rerun()
-            else:
-                st.caption("Upload spend data to enable.")
+                    st.success(f"✅ {len(_sb_parsed)} rows loaded")
+                except Exception as _sb_e:
+                    st.error(str(_sb_e))
 
     st.markdown("---")
     with st.expander("🔧 Spaces diagnostics"):
@@ -914,44 +1112,33 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown(
     "<h1 style='font-family:DM Serif Display,serif;font-size:2.1rem;margin-bottom:0;"
-    "color:var(--text-color)'>🎯 Baseline</h1>"
+    "color:var(--text-color)'>🗂️ Scenario Runs</h1>"
     "<p style='color:var(--text-color);opacity:0.55;margin-top:0.1rem'>"
-    "Application Calculator — manual spend input → predicted APPs</p>",
+    "Enter spend, run predictions, compare scenarios</p>",
     unsafe_allow_html=True,
 )
 st.divider()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — Baseline Spend Data Input
-# ══════════════════════════════════════════════════════════════════════════════
-st.markdown("<div class='section-header'>📋 Baseline Spend Data Input</div>", unsafe_allow_html=True)
-st.markdown(
-    "<div class='note-box'>Enter future monthly spend data manually below. "
-    "Or upload a batch file from the Baseline dropdown under the Scenarios section on the left.</div>",
-    unsafe_allow_html=True,
-)
-
-# ── Template CSV (built once, used below the table) ──────────────────────────
-_template_df = pd.DataFrame(columns=_REQUIRED_COLS)
+# ── Template CSV ──────────────────────────────────────────────────────────────
+_template_df  = pd.DataFrame(columns=_REQUIRED_COLS)
 _template_csv = _template_df.to_csv(index=False).encode("utf-8")
 
-# Default 5 rows
-default_rows = pd.DataFrame(
+# ── Default empty table ───────────────────────────────────────────────────────
+_default_rows = pd.DataFrame(
     {
-        "Date":           [date.today()] * 5,
-        "State":          ["AL"] * 5,
-        "DSP ($)":        [0.0] * 5,
-        "LeadGen ($)":    [0.0] * 5,
-        "Paid Search ($)":[0.0] * 5,
-        "Paid Social ($)":[0.0] * 5,
-        "Prescreen ($)":  [0.0] * 5,
-        "Referrals ($)":  [0.0] * 5,
-        "Sweepstakes ($)":[0.0] * 5,
+        "Date":            [date.today()] * 5,
+        "State":           ["AL"] * 5,
+        "DSP ($)":         [0.0] * 5,
+        "LeadGen ($)":     [0.0] * 5,
+        "Paid Search ($)": [0.0] * 5,
+        "Paid Social ($)": [0.0] * 5,
+        "Prescreen ($)":   [0.0] * 5,
+        "Referrals ($)":   [0.0] * 5,
+        "Sweepstakes ($)": [0.0] * 5,
     }
 )
 
-column_config = {
+_column_config = {
     "Date":  st.column_config.DateColumn("Date", required=True),
     "State": st.column_config.SelectboxColumn("State", options=STATE_OPTIONS, required=True),
     **{
@@ -960,324 +1147,86 @@ column_config = {
     },
 }
 
-_sc0 = st.session_state.scenarios[0]
-_editor_data = (
-    _sc0["upload_df"]
-    if _sc0["upload_df"] is not None
-    else default_rows
-)
-
-edited_df = st.data_editor(
-    _editor_data,
-    column_config=column_config,
-    num_rows="dynamic",
-    use_container_width=True,
-    hide_index=True,
-    key=f"spend_editor_{_sc0['upload_version']}",
-)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-_btn_col, _tmpl_col = st.columns([2, 1])
-run_clicked = _btn_col.button("▶ Run Predictions", type="primary", use_container_width=True)
-_tmpl_col.download_button(
-    "⬇ Download template",
-    data=_template_csv,
-    file_name="spend_template.csv",
-    mime="text/csv",
-    use_container_width=True,
-)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PREDICTION — triggered on button click
+# TABS — one per scenario
 # ══════════════════════════════════════════════════════════════════════════════
-if run_clicked:
-    # ── Validation ────────────────────────────────────────────────────────────
-    if st.session_state.coeff_df is None:
-        st.error("⚠️ Please upload modelcoeff_and_prodfactors.csv in the sidebar first.")
-        st.stop()
+_tab_labels = []
+for _sc in st.session_state.scenarios:
+    _icon = "✅ " if _sc["results_df"] is not None else ""
+    _tab_labels.append(f"{_icon}{_sc['name']}")
 
-    valid_rows = edited_df.dropna(subset=["Date", "State"])
-    valid_rows = valid_rows[valid_rows["State"].astype(str).str.strip() != ""]
+_tabs = st.tabs(_tab_labels)
 
-    if valid_rows.empty:
-        st.error("⚠️ Input table must have at least one row with a valid Date and State.")
-        st.stop()
-
-    with st.spinner("Running predictions…"):
-        _results, _monthly = run_scenario(valid_rows, st.session_state.coeff_df)
-
-    _sc0 = st.session_state.scenarios[0]
-    _sc0["results_df"] = _results
-    _sc0["input_snap"] = valid_rows.copy()
-    _sc0["monthly_df"] = _monthly
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — Output
-# ══════════════════════════════════════════════════════════════════════════════
-_active_scens = [
-    sc for sc in st.session_state.scenarios
-    if sc["monthly_df"] is not None and not sc["monthly_df"].empty
-]
-
-if _active_scens:
-    st.divider()
-    st.markdown("<div class='section-header'>📊 Predictions</div>", unsafe_allow_html=True)
-
-    # ── Coverage issues expander (baseline only) ──────────────────────────────
-    _sc0 = st.session_state.scenarios[0]
-    if _sc0["results_df"] is not None:
-        _issue_rows = []
-        _fail_rows  = _sc0["results_df"][_sc0["results_df"]["Model_Status"] != "OK"]
-        _real_fails = _fail_rows[
-            ~_fail_rows["State"].astype(str).str.strip().str.lower().isin(("nan", "none", ""))
-        ]
-        if not _real_fails.empty:
-            for _state, _grp in _real_fails.groupby("State"):
-                _issue_rows.append({"State": _state, "Issue": f"No model found — {len(_grp)} week(s) skipped"})
-        if st.session_state.coeff_df is not None and "Key" in st.session_state.coeff_df.columns:
-            _input_states = set(_sc0["results_df"]["State"].astype(str).unique())
-            _model_states = set(
-                st.session_state.coeff_df["Key"].dropna()
-                .apply(lambda k: _parse_key(str(k)).get("STATE_CD", "")).unique()
-            ) - {""}
-            for _s in sorted(_model_states - _input_states):
-                _issue_rows.append({"State": _s, "Issue": "Has a model but no spend data provided"})
-        if _issue_rows:
-            with st.expander(f"⚠️ {len(_issue_rows)} coverage issue(s)", expanded=False):
-                st.dataframe(pd.DataFrame(_issue_rows), use_container_width=True, hide_index=True)
-
-    # ── Full-month filter per scenario ────────────────────────────────────────
-    _full_monthlys: dict[str, pd.DataFrame] = {}
-    for _asc in _active_scens:
-        _fm = _full_month_filter(_asc["monthly_df"])
-        if _fm is not None and not _fm.empty:
-            _full_monthlys[_asc["name"]] = _fm
-
-    if _full_monthlys:
-        _all_monthly = pd.concat(list(_full_monthlys.values()), ignore_index=True)
-
-        # ── Unified filter bar ────────────────────────────────────────────────
-        _mf1, _mf2, _mf3, _mf4, _mf5 = st.columns(5)
-
-        _sel_m_st = _mf1.multiselect(
-            "Filter by State",
-            sorted(_all_monthly["State"].dropna().unique().tolist()),
-            key="monthly_filter_state",
-            placeholder="All states",
-        )
-        _m_mo_base   = _all_monthly if not _sel_m_st else _all_monthly[_all_monthly["State"].isin(_sel_m_st)]
-        _m_mo_nums   = sorted(_m_mo_base["Calendar_Month"].dropna().unique().astype(int).tolist())
-        _m_mo_labels = [_MONTH_NAME.get(m, str(m)) for m in _m_mo_nums]
-        _m_mo_map    = dict(zip(_m_mo_labels, _m_mo_nums))
-        _sel_m_mo = _mf2.multiselect(
-            "Filter by Month",
-            _m_mo_labels,
-            key="monthly_filter_month",
-            placeholder="All months",
-        )
-        _ch_opts = sorted(_all_monthly["Channel"].dropna().unique().tolist()) if "Channel" in _all_monthly.columns else []
-        _ht_opts = sorted(_all_monthly["H_Tactic"].dropna().unique().tolist()) if "H_Tactic" in _all_monthly.columns else []
-        _dt_opts = sorted(_all_monthly["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _all_monthly.columns else []
-        _sel_m_ch = _mf3.multiselect("Channel",       _ch_opts, key="monthly_filter_channel",       placeholder="All")
-        _sel_m_ht = _mf4.multiselect("H_Tactic",      _ht_opts, key="monthly_filter_h_tactic",      placeholder="All")
-        _sel_m_dt = _mf5.multiselect("Detail_Tactic", _dt_opts, key="monthly_filter_detail_tactic", placeholder="All")
-
-        _pf_data  = st.session_state.product_factors_df
-        _prod_opts = (
-            sorted(v for v in _pf_data["PRODUCT_FUNDED"].dropna().unique() if v != "Not Funded")
-            if _pf_data is not None and not _pf_data.empty else []
-        )
-        if _prod_opts:
-            _pf_col, _ = st.columns([2, 3])
-            _sel_prod = _pf_col.multiselect("Filter by Product", _prod_opts, key="monthly_filter_product", placeholder="All products")
-        else:
-            _sel_prod = []
-
-        # ── APPS View (hardcoded to All; UI selector removed) ─────────────────
-        _view = "All"
-
-        _apps_col_map = {"All": "Allocated_Predicted_APPS_Rounded", "Baseline": "Baseline_APPS_Rounded",    "Incremental": "Incremental_APPS_Rounded"}
-        _appr_col_map = {"All": "Allocated_Approved_Rounded",       "Baseline": "Baseline_Approved_Rounded", "Incremental": "Incremental_Approved_Rounded"}
-        _orig_col_map = {"All": "Allocated_Originations_Rounded",   "Baseline": "Baseline_Originations_Rounded", "Incremental": "Incremental_Originations_Rounded"}
-        _selected_apps_col = _apps_col_map[_view]
-        _approval_col      = _appr_col_map[_view]
-        _origination_col   = _orig_col_map[_view]
-        _all_agg_cols      = list(_apps_col_map.values()) + list(_appr_col_map.values()) + list(_orig_col_map.values())
-        _orig_rounded_cols = list(_orig_col_map.values())
-
-        # ── Apply filters + aggregate per scenario ────────────────────────────
-        _scene_agg: dict[str, pd.DataFrame] = {}
-        for _asc in _active_scens:
-            _mdf = _full_monthlys.get(_asc["name"])
-            if _mdf is None:
-                continue
-            _mdf = _mdf.copy()
-            if _sel_m_st: _mdf = _mdf[_mdf["State"].isin(_sel_m_st)]
-            if _sel_m_mo: _mdf = _mdf[_mdf["Calendar_Month"].isin([_m_mo_map[m] for m in _sel_m_mo])]
-            _mdf = _apply_grain_filter(_mdf, "Channel",       _sel_m_ch)
-            _mdf = _apply_grain_filter(_mdf, "H_Tactic",      _sel_m_ht)
-            _mdf = _apply_grain_filter(_mdf, "Detail_Tactic", _sel_m_dt)
-            if _pf_data is not None and not _pf_data.empty:
-                _mdf = _mdf.merge(
-                    _pf_data[["Key", "PRODUCT_FUNDED", "APPLICATION_SHARE"]],
-                    on="Key", how="left"
-                )
-                _share = _mdf["APPLICATION_SHARE"].fillna(1.0)
-                for _mc in [c for c in _all_agg_cols if c in _mdf.columns]:
-                    _mdf[_mc] = (_mdf[_mc].astype(float) * _share).round().astype("Int64")
-                _mdf = _mdf.drop(columns=["APPLICATION_SHARE"])
-                if _sel_prod:
-                    _mdf = _mdf[_mdf["PRODUCT_FUNDED"].isin(_sel_prod)]
-            _agg_cols_present = [c for c in _all_agg_cols if c in _mdf.columns]
-            _grain_keys = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in _mdf.columns]
-            _agg = _mdf.groupby(["State", "Calendar_Year", "Calendar_Month"] + _grain_keys, as_index=False)[_agg_cols_present].sum()
-
-            if "PRODUCT_FUNDED" in _agg.columns and (_agg["PRODUCT_FUNDED"] == "Not Funded").any():
-                _key_dims    = [c for c in ["State", "Calendar_Year", "Calendar_Month", "Channel", "H_Tactic", "Detail_Tactic"] if c in _agg.columns]
-                _redist_cols = [c for c in _agg_cols_present if c in _agg.columns]
-                _is_nf       = _agg["PRODUCT_FUNDED"] == "Not Funded"
-                _nf_rows     = _agg[_is_nf][_key_dims + _redist_cols]
-                _f_rows      = _agg[~_is_nf].copy()
-                if not _f_rows.empty:
-                    _nf_totals = _nf_rows.groupby(_key_dims, as_index=False)[_redist_cols].sum()
-                    _nf_totals = _nf_totals.rename(columns={c: f"_nf_{c}" for c in _redist_cols})
-                    _f_rows = _f_rows.merge(_nf_totals, on=_key_dims, how="left")
-                    for _rc in _redist_cols:
-                        _nf_col = f"_nf_{_rc}"
-                        if _nf_col not in _f_rows.columns:
-                            continue
-                        _grp_total = _f_rows.groupby(_key_dims)[_rc].transform("sum").replace(0, np.nan)
-                        _prop      = _f_rows[_rc].astype(float) / _grp_total
-                        _f_rows[_rc] = (
-                            _f_rows[_rc].astype(float)
-                            + (_prop * _f_rows[_nf_col].fillna(0)).fillna(0)
-                        ).round().astype("Int64")
-                    _f_rows = _f_rows.drop(columns=[c for c in _f_rows.columns if c.startswith("_nf_")])
-                _agg = _f_rows
-
-            _agg["Period"] = (
-                _agg["Calendar_Month"].astype(int).map(_MONTH_NAME)
-                + " " + _agg["Calendar_Year"].astype(int).astype(str)
+for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
+    with _tab:
+        # Scenario name input (not for Baseline)
+        if _ti > 0:
+            _name_key = f"sc_name_{_ti}"
+            _new_name = st.text_input(
+                "Scenario name",
+                key=_name_key,
+                placeholder=f"Scenario {_ti}",
+                label_visibility="visible",
             )
-            _scene_agg[_asc["name"]] = _agg
-
-        # ── Baseline display ──────────────────────────────────────────────────
-        _sc0_name = st.session_state.scenarios[0]["name"]
-        m_display = _scene_agg.get(_sc0_name)
-
-        if m_display is None or m_display.empty:
-            st.info("No rows match the selected filters.")
-        else:
-            # ── Blended rates (approval and origination) ──────────────────────
-            _appr_apps_sum = int(m_display["Allocated_Predicted_APPS_Rounded"].sum()) if "Allocated_Predicted_APPS_Rounded" in m_display.columns else 0
-            _has_appr_data = _approval_col    in m_display.columns and _appr_apps_sum > 0
-            _appr_sum      = m_display[_approval_col].sum() if _approval_col in m_display.columns else 0
-            _has_orig_data = _origination_col in m_display.columns and _appr_sum > 0
-            _blended_appr_rate = _appr_sum / _appr_apps_sum if _has_appr_data else 0.0
-            _blended_orig_rate = m_display[_origination_col].sum() / _appr_sum if _has_orig_data else 0.0
-
-            _display_apps_col = _selected_apps_col if _selected_apps_col in m_display.columns else None
-            _has_approved     = _approval_col    in m_display.columns
-            _has_originated   = _origination_col in m_display.columns
-
-            _apps_total = int(m_display[_display_apps_col].sum()) if _display_apps_col else 0
-            _appr_total = int(m_display[_approval_col].sum())     if _has_approved     else None
-            _orig_total = int(m_display[_origination_col].sum())  if _has_originated   else None
-
-            # ── Total spend from input_snap filtered by State + Month only ────
-            _snap = st.session_state.scenarios[0].get("input_snap")
-            _spend_total = None
-            if _snap is not None and not _snap.empty:
-                _sp = _snap.copy()
-                _sp["_date"] = pd.to_datetime(_sp["Date"], errors="coerce")
-                _sp["_month_num"] = _sp["_date"].dt.month
-                if _sel_m_st:
-                    _sp = _sp[_sp["State"].isin(_sel_m_st)]
-                if _sel_m_mo:
-                    _sp = _sp[_sp["_month_num"].isin([_m_mo_map[m] for m in _sel_m_mo])]
-                _spend_total = _sp[SPEND_COLUMNS].sum().sum()
-
-            def _fmt_spend(v: float) -> str:
-                if v >= 1_000_000:
-                    return f"${v / 1_000_000:.1f}MM"
-                if v >= 1_000:
-                    return f"${v / 1_000:.1f}K"
-                return f"${v:.0f}"
-
-            _n_mc  = 1 + (1 if _appr_total is not None else 0) + (1 if _orig_total is not None else 0) + (1 if _spend_total is not None else 0)
-            _mcols = st.columns(_n_mc)
-            _mcols[0].metric("Predicted Applications", f"{_apps_total:,}")
-            if _appr_total is not None:
-                _mcols[1].metric("Likely Approvals", f"{_appr_total:,}")
-                if _has_appr_data:
-                    _mcols[1].markdown(
-                        f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
-                        f"Approval Rate: <strong>{_blended_appr_rate * 100:.0f}%</strong></div>",
-                        unsafe_allow_html=True,
-                    )
-            if _orig_total is not None:
-                _orig_idx = 1 + (1 if _appr_total is not None else 0)
-                _mcols[_orig_idx].metric("Likely Funded", f"{_orig_total:,}")
-                if _has_orig_data:
-                    _mcols[_orig_idx].markdown(
-                        f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
-                        f"Conversion Rate: <strong>{_blended_orig_rate * 100:.0f}%</strong></div>",
-                        unsafe_allow_html=True,
-                    )
-            if _spend_total is not None:
-                _spend_idx = 1 + (1 if _appr_total is not None else 0) + (1 if _orig_total is not None else 0)
-                _grain_active = any([_sel_m_ch, _sel_m_ht, _sel_m_dt, _sel_prod])
-                _mcols[_spend_idx].metric("Total Spend (@ State/Month only)", "N/A" if _grain_active else _fmt_spend(_spend_total))
-                if _grain_active:
-                    _cpf_label = "Not Calculated"
-                elif _orig_total and _orig_total > 0:
-                    _cpf_label = _fmt_spend(_spend_total / _orig_total)
-                else:
-                    _cpf_label = "—"
-                _mcols[_spend_idx].markdown(
-                    f"<div style='font-size:0.75rem;color:var(--text-color);opacity:0.6;margin-top:0.15rem'>"
-                    f"CPF (per State/Month): <strong>{_cpf_label}</strong></div>",
-                    unsafe_allow_html=True,
-                )
-
-            _grain_cols = [c for c in ["Channel", "H_Tactic", "Detail_Tactic", "PRODUCT_FUNDED"] if c in m_display.columns]
-            _monthly_primary_cols = ["State", "Period"] + _grain_cols
-            _col_rename = {"PRODUCT_FUNDED": "Product"} if "PRODUCT_FUNDED" in _grain_cols else {}
-            if _display_apps_col:
-                _monthly_primary_cols.append(_display_apps_col)
-                _col_rename[_display_apps_col] = "Predicted Applications"
-            if _has_approved:
-                _monthly_primary_cols.append(_approval_col)
-                _col_rename[_approval_col] = "Likely Approvals"
-            if _has_originated:
-                _monthly_primary_cols.append(_origination_col)
-                _col_rename[_origination_col] = "Likely Funded"
-            _monthly_fmt   = {c: "{:,}" for c in _monthly_primary_cols if c not in ["State", "Period"] + _grain_cols}
-            _display_slice = m_display[_monthly_primary_cols].rename(columns=_col_rename)
-            _display_fmt   = {_col_rename.get(c, c): fmt for c, fmt in _monthly_fmt.items()}
-
+            _sc["name"] = _new_name or f"Scenario {_ti}"
             st.markdown("<br>", unsafe_allow_html=True)
-            st.dataframe(
-                _display_slice.style.format(_display_fmt, na_rep=""),
-                use_container_width=True,
-                height=min(400, 45 + len(m_display) * 35),
-                hide_index=True,
-            )
+
+        st.markdown(
+            "<div class='note-box'>Enter future monthly spend data manually below, "
+            "or upload a CSV / Excel file from the sidebar to pre-fill the table.</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Data editor
+        _editor_data = _sc["upload_df"] if _sc["upload_df"] is not None else _default_rows
+        _edited_df = st.data_editor(
+            _editor_data,
+            column_config=_column_config,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key=f"spend_editor_{_ti}_{_sc['upload_version']}",
+        )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.download_button(
-            label="⬇ Download Monthly as CSV",
-            data=(m_display.to_csv(index=False).encode("utf-8") if m_display is not None and not m_display.empty else b""),
-            file_name=f"monthly_predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
+        _btn_col, _tmpl_col = st.columns([2, 1])
+        _run_clicked = _btn_col.button(
+            "▶ Run Predictions",
+            type="primary",
+            use_container_width=True,
+            key=f"run_btn_{_ti}",
         )
+        _tmpl_col.download_button(
+            "⬇ Download template",
+            data=_template_csv,
+            file_name="spend_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"tmpl_btn_{_ti}",
+        )
+
+        if _run_clicked:
+            if st.session_state.coeff_df is None:
+                st.error("⚠️ Please upload modelcoeff_and_prodfactors.csv in the sidebar first.")
+            else:
+                _valid_rows = _edited_df.dropna(subset=["Date", "State"])
+                _valid_rows = _valid_rows[_valid_rows["State"].astype(str).str.strip() != ""]
+                if _valid_rows.empty:
+                    st.error("⚠️ Input table must have at least one row with a valid Date and State.")
+                else:
+                    with st.spinner(f"Running {_sc['name']}…"):
+                        _res, _mon = run_scenario(_valid_rows, st.session_state.coeff_df)
+                    _sc["results_df"] = _res
+                    _sc["input_snap"] = _valid_rows.copy()
+                    _sc["monthly_df"] = _mon
+
+        # Results section — only shown after a successful run
+        _render_results(_sc, _ti, st.session_state.product_factors_df)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — Comments
+# SECTION — Comments
 # ══════════════════════════════════════════════════════════════════════════════
 st.divider()
 st.markdown("<div class='section-header'>💬 Comments</div>", unsafe_allow_html=True)
