@@ -64,15 +64,13 @@ def _full_month_filter(monthly_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _apply_grain_filter(df: pd.DataFrame, col: str, selected: list) -> pd.DataFrame:
-    if col not in df.columns or not selected:
+    if not selected:
         return df
-    if "--Default--" in selected:
-        mask = df[col].isna()
-        others = [v for v in selected if v != "--Default--"]
-        if others:
-            mask = mask | df[col].isin(others)
-        return df[mask]
-    return df[df[col].isin(selected)]
+    mask = pd.Series(False, index=df.index)
+    others = [v for v in selected if v != "--Default--"]
+    if others:
+        mask |= df[col].isin(others)
+    return df[mask]
 
 
 # ── Guard: session state must exist ───────────────────────────────────────────
@@ -115,32 +113,35 @@ if "Calendar_Year" in _all_monthly.columns and "Calendar_Month" in _all_monthly.
         _period_sort_key[_r["Period"]] = int(_r["Calendar_Year"]) * 100 + int(_r["Calendar_Month"])
 _month_opts = sorted(_period_sort_key.keys(), key=lambda p: _period_sort_key[p])
 
-_ch_opts = ["--Default--"] + (sorted(_all_monthly["Channel"].dropna().unique().tolist())       if "Channel"       in _all_monthly.columns else [])
-_ht_opts = ["--Default--"] + (sorted(_all_monthly["H_Tactic"].dropna().unique().tolist())      if "H_Tactic"      in _all_monthly.columns else [])
-_dt_opts = ["--Default--"] + (sorted(_all_monthly["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _all_monthly.columns else [])
+_ch_opts = sorted(_all_monthly["Channel"].dropna().unique().tolist())       if "Channel"       in _all_monthly.columns else []
+_ht_opts = sorted(_all_monthly["H_Tactic"].dropna().unique().tolist())      if "H_Tactic"      in _all_monthly.columns else []
+_dt_opts = sorted(_all_monthly["Detail_Tactic"].dropna().unique().tolist()) if "Detail_Tactic" in _all_monthly.columns else []
 
 # ── Filter bar ─────────────────────────────────────────────────────────────────
 _f1, _f2, _f3, _f4, _f5 = st.columns(5)
 _sel_state = _f1.multiselect("State",         _state_opts, key="cmp_state",  placeholder="All")
 _sel_month = _f2.multiselect("Month",         _month_opts, key="cmp_month",  placeholder="All")
-_sel_ch    = _f3.multiselect("Channel",       _ch_opts, default=["--Default--"], key="cmp_channel")
-_sel_ht    = _f4.multiselect("H_Tactic",      _ht_opts, default=["--Default--"], key="cmp_h_tactic")
-_sel_dt    = _f5.multiselect("Detail_Tactic", _dt_opts, default=["--Default--"], key="cmp_detail_tactic")
+_sel_ch    = _f3.multiselect("Channel",       _ch_opts, key="cmp_channel",       placeholder="All")
+_sel_ht    = _f4.multiselect("H_Tactic",      _ht_opts, key="cmp_h_tactic",      placeholder="All")
+_sel_dt    = _f5.multiselect("Detail_Tactic", _dt_opts, key="cmp_detail_tactic", placeholder="All")
 
-_pf_data   = st.session_state.get("product_factors_df")
-_prod_opts = (sorted(_pf_data["PRODUCT_FUNDED"].dropna().unique().tolist())
-              if _pf_data is not None and not _pf_data.empty else [])
+_pf_data = st.session_state.get("product_factors_df")
+_prod_opts: list = []
+if _pf_data is not None and not _pf_data.empty and "Key" in _all_monthly.columns:
+    _pf_joined = (
+        _all_monthly[["Key"]].drop_duplicates()
+        .merge(_pf_data[["Key", "PRODUCT_FUNDED"]], on="Key", how="inner")
+    )
+    _prod_opts = sorted(
+        v for v in _pf_joined["PRODUCT_FUNDED"].dropna().unique() if v != "Not Funded"
+    )
 
 _sel_prod: list = []
 if _prod_opts:
-    _pf_col, _, _vw_col = st.columns([2, 2, 2])
-    _sel_prod   = _pf_col.multiselect("Filter by Product", _prod_opts, key="cmp_product", placeholder="All products")
-    _view_label = _vw_col.radio("APPS View", ["All", "No-Spend", "Incremental"], horizontal=True, key="cmp_view")
-else:
-    _, _vw_col  = st.columns([4, 2])
-    _view_label = _vw_col.radio("APPS View", ["All", "No-Spend", "Incremental"], horizontal=True, key="cmp_view")
+    _pf_col, _ = st.columns([2, 4])
+    _sel_prod = _pf_col.multiselect("Filter by Product", _prod_opts, key="cmp_product", placeholder="All products")
 
-_view = "Baseline" if _view_label == "No-Spend" else _view_label
+_view = "All"
 
 _apps_col_map = {"All": "Allocated_Predicted_APPS_Rounded", "Baseline": "Baseline_APPS_Rounded",    "Incremental": "Incremental_APPS_Rounded"}
 _appr_col_map = {"All": "Allocated_Approved_Rounded",       "Baseline": "Baseline_Approved_Rounded", "Incremental": "Incremental_Approved_Rounded"}
@@ -281,7 +282,7 @@ for _ci, _sc in enumerate(_active):
                 f"<div style='font-size:0.8rem;font-weight:600'>{_sc['name']}</div>"
                 f"<div style='font-size:0.7rem;color:gray;margin-bottom:0.3rem'>"
                 f"Model defaults — Appr: {round(_rd['model_appr'] * 100):.0f}% &nbsp;|&nbsp; "
-                f"Orig: {round(_rd['model_orig'] * 100):.0f}%</div>",
+                f"Conv: {round(_rd['model_orig'] * 100):.0f}%</div>",
                 unsafe_allow_html=True,
             )
             st.number_input(
@@ -290,7 +291,7 @@ for _ci, _sc in enumerate(_active):
                 key=f"cmp_appr_rate_{_ci}",
             )
             st.number_input(
-                "Funding Rate (%)", min_value=0.0, max_value=100.0,
+                "Conversion Rate (%)", min_value=0.0, max_value=100.0,
                 value=float(round(_rd["model_orig"] * 100)), step=1.0, format="%.0f",
                 key=f"cmp_orig_rate_{_ci}",
             )
@@ -342,6 +343,14 @@ for _sc in _active:
     _spend_series[_sc["name"]] = _ms[["Period", "_total"]]
 
 
+def _fmt_spend(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.1f}MM"
+    if v >= 1_000:
+        return f"${v / 1_000:.1f}K"
+    return f"${v:.0f}"
+
+
 def _make_chart(
     title: str,
     col: str,
@@ -365,10 +374,10 @@ def _make_chart(
         _sp = spend_series.get(_sc["name"]) if spend_series else None
         if _sp is not None and not _sp.empty:
             _ts = _ts.merge(_sp[["Period", "_total"]], on="Period", how="left")
-            _customdata  = _ts["_total"].fillna(0).values
-            _texttemplate = "%{y:,.0f}<br>$%{customdata:,.0f}"
+            _customdata   = _ts["_total"].fillna(0).apply(_fmt_spend).values
+            _texttemplate = "%{y:,.0f}<br>%{customdata}"
         else:
-            _customdata  = None
+            _customdata   = None
             _texttemplate = "%{y:,.0f}"
 
         fig.add_trace(go.Bar(
@@ -382,7 +391,7 @@ def _make_chart(
             textfont=dict(size=9, color="#94a3b8"),
             hovertemplate=(
                 f"<b>%{{x}}</b><br>{_sc['name']}: %{{y:,.0f}}"
-                + ("<br>Spend: $%{customdata:,.0f}" if _customdata is not None else "")
+                + ("<br>Spend: %{customdata}" if _customdata is not None else "")
                 + "<extra></extra>"
             ),
         ))

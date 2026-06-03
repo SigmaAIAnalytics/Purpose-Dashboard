@@ -98,7 +98,7 @@ st.markdown("## What is Oracle?")
 st.markdown(
     "Oracle is a forecasting tool built on a Marketing Mix Model (MMM). "
     "Enter planned marketing spend by state and month and Oracle predicts the number of "
-    "loan **Applications**, likely **Approvals**, and likely **Originations** that will result. "
+    "loan **Applications**, likely **Approvals**, and likely **Funded** loans that will result. "
     "You can run up to four spend scenarios side-by-side and compare outcomes."
 )
 
@@ -116,7 +116,7 @@ with col_a:
             <div class='step-number'>1</div>
             <div class='step-title'>Load the model file</div>
             <div class='step-body'>
-                On the <strong>Baseline</strong> page, open the <em>Model</em> expander in the
+                On the <strong>Scenario Runs</strong> page, open the <em>Model</em> expander in the
                 sidebar. Upload <code>modelcoeff_and_prodfactors.csv</code> from the model
                 pipeline — or it will load automatically if DigitalOcean Spaces is configured.
             </div>
@@ -130,8 +130,9 @@ with col_a:
             <div class='step-number'>2</div>
             <div class='step-title'>Enter baseline spend</div>
             <div class='step-body'>
-                On the <strong>Baseline</strong> page, type monthly spend directly into the
-                table or upload a CSV / Excel file. Each row is one state × month combination.
+                On the <strong>Scenario Runs</strong> page, open the <em>Baseline</em> tab.
+                Type monthly spend directly into the table or upload a CSV / Excel file via
+                the sidebar. Each row is one state × month combination.
                 Download the template if you need the correct column format.
             </div>
         </div>
@@ -148,7 +149,7 @@ with col_b:
             <div class='step-body'>
                 Click <strong>▶ Run Predictions</strong>. Oracle converts your monthly spend
                 to weekly, scores every coefficient row for each state, and rolls the results
-                back up to monthly. Predicted Applications, Approvals, and Originations are
+                back up to monthly. Predicted Applications, Approvals, and Funded loans are
                 shown in a filterable table below.
             </div>
         </div>
@@ -161,10 +162,11 @@ with col_b:
             <div class='step-number'>4</div>
             <div class='step-title'>Compare scenarios</div>
             <div class='step-body'>
-                Upload up to three additional spend files using the <em>Scenario 1–3</em>
-                expanders in the sidebar, then run each one. Open the
-                <strong>Scenario Comparison</strong> page to see side-by-side bar charts
-                and a full comparison table across all active scenarios.
+                Upload additional spend files using the <em>Scenario 1–3</em> expanders
+                in the sidebar, then open each scenario's tab and run predictions.
+                Open the <strong>Scenario Comparison</strong> page to see side-by-side
+                bar charts, apply Approval and Conversion Rate overrides, and download
+                a full comparison table across all active scenarios.
             </div>
         </div>
         """,
@@ -210,8 +212,36 @@ with _fmt_col:
 with _note_col:
     st.markdown("**Supported states**")
     st.markdown(
-        "AL, CA, CO, DE, FL, IA, ID, IN, KS, KY, LA, MI, MO, MS, "
-        "NV, OH, OK, RI, SC, TN, TX, UT, WI, WY"
+        "Determined by the loaded model file. The State dropdown on the "
+        "Scenario Runs page will automatically reflect every state present "
+        "in the model."
+    )
+
+st.divider()
+
+# ── Model-driven flexibility ──────────────────────────────────────────────────
+st.markdown("## Model-Driven Flexibility")
+st.markdown(
+    "Oracle is designed to adapt automatically when the underlying model evolves — "
+    "no changes to the application are required."
+)
+
+_fl1, _fl2 = st.columns(2)
+with _fl1:
+    st.markdown("**New states**")
+    st.markdown(
+        "When a new state is added to the model, Oracle detects it automatically. "
+        "The State dropdown in the spend table will include the new state as soon as "
+        "the updated model file is loaded — no code change needed."
+    )
+with _fl2:
+    st.markdown("**New spend tactics**")
+    st.markdown(
+        "When a new marketing tactic is introduced in the model, Oracle reads its "
+        "coefficient and scaling parameters directly from the model file and adds it "
+        "as a spend column automatically. Tactics that are tracked but carry no model "
+        "coefficient — such as Sweepstakes — are also included in the spend table so "
+        "the full picture of planned spend is always visible."
     )
 
 st.divider()
@@ -224,16 +254,17 @@ with _p1:
     st.markdown("**🏠 Home** *(this page)*")
     st.markdown("Overview and instructions.")
 with _p2:
-    st.markdown("**📊 Baseline**")
+    st.markdown("**🗂️ Scenario Runs**")
     st.markdown(
-        "Enter spend, load the model, run predictions. "
-        "Also manages all scenario files and runs."
+        "Load the model, enter spend, and run predictions across up to four "
+        "named scenario tabs. Includes a Comments section for notes and feedback."
     )
 with _p3:
     st.markdown("**🔀 Scenario Comparison**")
     st.markdown(
         "Side-by-side bar charts and a full table comparing "
-        "Applications, Approvals, and Originations across all run scenarios."
+        "Applications, Approvals, and Funded loans across all run scenarios. "
+        "Supports Approval and Conversion Rate overrides and product-level filtering."
     )
 
 st.markdown(

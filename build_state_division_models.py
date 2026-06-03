@@ -1383,7 +1383,9 @@ def add_optional_features(
         return entity_df
 
     frame = entity_df.sort_values([YEAR_COL, WEEK_COL]).copy()
-    time_index = np.arange(1, len(frame) + 1, dtype=float)
+    # Calendar-based index so training and scoring (score_from_coefficients_row) agree.
+    # Formula: week 1 of 2024 = 2, week 52 of 2025 = 105, etc.
+    time_index = (frame[YEAR_COL] - 2024).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
     lagged_target = frame[target_col].shift(1)
 
     if TIME_INDEX_COL in optional_features:

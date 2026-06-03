@@ -200,6 +200,38 @@ TACTIC_MAP = {
 _COL_TO_TACTIC = {col: names[0] for col, names in TACTIC_MAP.items()}
 _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
 
+# Tactics included in the spend table but not in the model (no coefficient).
+# Kept so the client can see them were considered during modelling.
+_EXTRA_SPEND_TACTICS = ["Sweepstakes"]
+
+
+def _build_tactic_map(coeff_df: pd.DataFrame) -> dict:
+    """Derive TACTIC_MAP from the loaded model — any column with a __MinMax_Min
+    companion is a scaled spend predictor. Extra tactics (e.g. Sweepstakes) that
+    carry no model coefficient are appended at the end."""
+    _NON_TACTIC_PREFIXES = (
+        "W_", "F_", "time_index", "year_indicator",
+        "sin_", "cos_",
+        "Prescreen_lag", "DSP_lag", "Paid_Search_lag",
+        "DSP_trailing", "Paid_Search_trailing", "Prescreen_trailing",
+        "APPLICATIONS_", "NON_DM_APPLICATIONS_",
+    )
+    modelled = sorted(
+        col[: -len("__MinMax_Min")]
+        for col in coeff_df.columns
+        if col.endswith("__MinMax_Min")
+        and not any(col.startswith(p) for p in _NON_TACTIC_PREFIXES)
+    )
+    tactics = list(modelled)
+    for extra in _EXTRA_SPEND_TACTICS:
+        if extra not in tactics:
+            tactics.append(extra)
+    return {
+        f"{t} ($)": (t, f"{t.replace(' ', '_')}_contrib")
+        for t in tactics
+    }
+
+
 _PF_COLS = ["PRODUCT_FUNDED", "APPLICATION_SHARE"]
 
 
@@ -1119,28 +1151,40 @@ st.markdown(
 )
 st.divider()
 
+# ── Rebuild tactic maps from loaded model (sidebar has already run by this point)
+if st.session_state.coeff_df is not None:
+    TACTIC_MAP     = _build_tactic_map(st.session_state.coeff_df)
+    SPEND_COLUMNS  = list(TACTIC_MAP.keys())
+    _REQUIRED_COLS = ["Date", "State"] + SPEND_COLUMNS
+    _COL_TO_TACTIC = {col: names[0] for col, names in TACTIC_MAP.items()}
+    _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
+
 # ── Template CSV ──────────────────────────────────────────────────────────────
 _template_df  = pd.DataFrame(columns=_REQUIRED_COLS)
 _template_csv = _template_df.to_csv(index=False).encode("utf-8")
 
 # ── Default empty table ───────────────────────────────────────────────────────
 _default_rows = pd.DataFrame(
-    {
-        "Date":            [date.today()] * 5,
-        "State":           ["AL"] * 5,
-        "DSP ($)":         [0.0] * 5,
-        "LeadGen ($)":     [0.0] * 5,
-        "Paid Search ($)": [0.0] * 5,
-        "Paid Social ($)": [0.0] * 5,
-        "Prescreen ($)":   [0.0] * 5,
-        "Referrals ($)":   [0.0] * 5,
-        "Sweepstakes ($)": [0.0] * 5,
-    }
+    {"Date": [date.today()] * 5, "State": ["AL"] * 5,
+     **{col: [0.0] * 5 for col in SPEND_COLUMNS}}
 )
+
+# Derive available states from the loaded model; fall back to the hardcoded list
+_state_dropdown_opts = STATE_OPTIONS
+if st.session_state.coeff_df is not None and "Key" in st.session_state.coeff_df.columns:
+    _derived_states = sorted(
+        s for s in
+        st.session_state.coeff_df["Key"].dropna()
+        .apply(lambda k: _parse_key(str(k)).get("STATE_CD", ""))
+        .unique()
+        if s
+    )
+    if _derived_states:
+        _state_dropdown_opts = _derived_states
 
 _column_config = {
     "Date":  st.column_config.DateColumn("Date", required=True),
-    "State": st.column_config.SelectboxColumn("State", options=STATE_OPTIONS, required=True),
+    "State": st.column_config.SelectboxColumn("State", options=_state_dropdown_opts, required=True),
     **{
         col: st.column_config.NumberColumn(col, min_value=0.0, format="%.2f", default=0.0)
         for col in SPEND_COLUMNS
@@ -1230,6 +1274,7 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
 # ══════════════════════════════════════════════════════════════════════════════
 st.divider()
 st.markdown("<div class='section-header'>💬 Comments</div>", unsafe_allow_html=True)
+st.caption("Please feel free to document your notes or feedback in this section")
 
 _spaces_configured = bool(
     os.environ.get("SPACES_KEY") and
