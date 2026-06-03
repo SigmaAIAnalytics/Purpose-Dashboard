@@ -1411,10 +1411,12 @@ def add_optional_features(
         return entity_df
 
     frame = entity_df.sort_values([YEAR_COL, WEEK_COL]).copy()
-    # Anchor to the earliest year present in this series so the index is
-    # meaningful regardless of which training window or data range is used.
-    time_index_anchor = int(frame[YEAR_COL].min())
-    time_index = (frame[YEAR_COL] - time_index_anchor).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
+    # Anchor to the global week number of the first actual observation so that
+    # time_index = 1 for the first row regardless of start date or rolling window.
+    # global_week = year * 52 + iso_week; anchor is stored in the coefficient row.
+    global_weeks = frame[YEAR_COL].astype(int) * 52 + frame[WEEK_COL].astype(int)
+    time_index_anchor = int(global_weeks.min())
+    time_index = (global_weeks - time_index_anchor + 1).astype(float)
     lagged_target = frame[target_col].shift(1)
 
     if TIME_INDEX_COL in optional_features:
@@ -2123,14 +2125,15 @@ def score_from_coefficients_row(
         frame[transformed_name] = transformed.astype(float)
 
     # Reconstruct deterministic optional features when they appear in the model.
-    # Use the anchor stored in the coefficient row so scoring always matches the
-    # training-window convention regardless of which data range was used.
-    _anchor_raw = coeff_row.get("Time_Index_Anchor", 2024)
-    _ti_anchor = int(_anchor_raw) if pd.notna(_anchor_raw) else 2024
+    # Time_Index_Anchor is the global week number (year * 52 + iso_week) of the
+    # first training observation. Falls back to week 1 of 2024 for old files.
+    _anchor_raw = coeff_row.get("Time_Index_Anchor", 2024 * 52 + 1)
+    _ti_anchor = int(_anchor_raw) if pd.notna(_anchor_raw) else (2024 * 52 + 1)
     if TIME_INDEX_COL in coef_dict:
-        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - _ti_anchor) * 52 + frame[WEEK_COL] + 1).astype(float)
+        frame[TIME_INDEX_COL] = (frame[YEAR_COL].astype(int) * 52 + frame[WEEK_COL].astype(int) - _ti_anchor + 1).astype(float)
     if TIME_INDEX_SQ_COL in coef_dict:
-        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - _ti_anchor) * 52 + frame[WEEK_COL] + 1).astype(float))
+        _ti = frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else (frame[YEAR_COL].astype(int) * 52 + frame[WEEK_COL].astype(int) - _ti_anchor + 1).astype(float)
+        frame[TIME_INDEX_SQ_COL] = np.square(_ti)
     if YEAR_INDICATOR_2025_COL in coef_dict:
         frame[YEAR_INDICATOR_2025_COL] = (frame[YEAR_COL] == 2025).astype(float)
     if YEAR_INDICATOR_2026_COL in coef_dict:

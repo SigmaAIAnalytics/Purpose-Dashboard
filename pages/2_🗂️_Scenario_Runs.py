@@ -482,11 +482,11 @@ def _score_coeff_row(
         contrib[contrib_key] = round(contribution, 6)
         prediction  += contribution
 
-    # Anchor read from the coefficient row so scoring always matches the training
-    # convention. Falls back to 2024 for coefficient files produced before this change.
-    _anchor_raw = coeff.get("Time_Index_Anchor", 2024)
-    _ti_anchor  = int(_anchor_raw) if pd.notna(_anchor_raw) else 2024
-    time_index    = (iso_year - _ti_anchor) * 52 + iso_week + 1
+    # Time_Index_Anchor is the global week number (year * 52 + iso_week) of the
+    # first training observation. Falls back to week 1 of 2024 for old files.
+    _anchor_raw   = coeff.get("Time_Index_Anchor", 2024 * 52 + 1)
+    _ti_anchor    = int(_anchor_raw) if pd.notna(_anchor_raw) else (2024 * 52 + 1)
+    time_index    = iso_year * 52 + iso_week - _ti_anchor + 1
     time_index_sq = time_index ** 2
 
     ti_c_raw = coeff.get("time_index", np.nan)
