@@ -1411,9 +1411,10 @@ def add_optional_features(
         return entity_df
 
     frame = entity_df.sort_values([YEAR_COL, WEEK_COL]).copy()
-    # Calendar-based index so training and scoring (score_from_coefficients_row) agree.
-    # Formula: week 1 of 2024 = 2, week 52 of 2025 = 105, etc.
-    time_index = (frame[YEAR_COL] - 2024).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
+    # Anchor to the earliest year present in this series so the index is
+    # meaningful regardless of which training window or data range is used.
+    time_index_anchor = int(frame[YEAR_COL].min())
+    time_index = (frame[YEAR_COL] - time_index_anchor).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
     lagged_target = frame[target_col].shift(1)
 
     if TIME_INDEX_COL in optional_features:
@@ -1950,6 +1951,7 @@ def build_future_coefficients_frame(
     model_type: str,
     fitted_model: object,
     scaler: object,
+    time_index_anchor: int = 2024,
 ) -> pd.DataFrame:
     """Create the coefficient export for one fitted future-forecast model.
 
@@ -1988,19 +1990,20 @@ def build_future_coefficients_frame(
 
     _key_parts = _parse_key_string(metadata.entity)
     row: Dict[str, Any] = {
-        "Key":           metadata.entity,
-        "State":         _key_parts.get("STATE_CD",      None),
-        "Channel":       _key_parts.get("CHANNEL_CD",    "--Default--"),
-        "H_Tactic":      _key_parts.get("H_TACTIC",      "--Default--"),
-        "Detail_Tactic": _key_parts.get("DETAIL_TACTIC", "--Default--"),
-        "Scope":         metadata.scope,
-        "Model_Type":    metadata.model_type,
-        "Feature_Run":   metadata.dummy_family,
-        "Scaler_Type":   metadata.scaler_type,
-        "Dropped_Dummy": metadata.dropped_dummy,
+        "Key":                metadata.entity,
+        "State":              _key_parts.get("STATE_CD",      None),
+        "Channel":            _key_parts.get("CHANNEL_CD",    "--Default--"),
+        "H_Tactic":           _key_parts.get("H_TACTIC",      "--Default--"),
+        "Detail_Tactic":      _key_parts.get("DETAIL_TACTIC", "--Default--"),
+        "Scope":              metadata.scope,
+        "Model_Type":         metadata.model_type,
+        "Feature_Run":        metadata.dummy_family,
+        "Scaler_Type":        metadata.scaler_type,
+        "Dropped_Dummy":      metadata.dropped_dummy,
         "Media_Transform_Config": json.dumps(metadata.media_transform_config, default=str),
-        "Target":        metadata.target_col,
-        "Intercept":     intercept,
+        "Target":             metadata.target_col,
+        "Time_Index_Anchor":  int(time_index_anchor),
+        "Intercept":          intercept,
     }
     for term, coefficient in coef_items:
         row[term] = float(coefficient)
@@ -2064,7 +2067,7 @@ def score_from_coefficients_row(
     _META_COLS = {
         "Key", "Scope", "Model_Type", "Feature_Run", "Target", "Intercept",
         "Dropped_Dummy", "Scaler_Type", "Media_Transform_Config",
-        "Modeling_Grain", "source_file",
+        "Time_Index_Anchor", "Modeling_Grain", "source_file",
     }
 
     intercept = float(coeff_row.get("Intercept", 0.0))
@@ -2120,13 +2123,14 @@ def score_from_coefficients_row(
         frame[transformed_name] = transformed.astype(float)
 
     # Reconstruct deterministic optional features when they appear in the model.
-    # time_index must match the training-window convention: week 1 of 2024 = 1,
-    # so index = (year - 2024) * 52 + week + 1.  Using row position here would
-    # give wrong values when scoring future data that doesn't start at week 1 of 2024.
+    # Use the anchor stored in the coefficient row so scoring always matches the
+    # training-window convention regardless of which data range was used.
+    _anchor_raw = coeff_row.get("Time_Index_Anchor", 2024)
+    _ti_anchor = int(_anchor_raw) if pd.notna(_anchor_raw) else 2024
     if TIME_INDEX_COL in coef_dict:
-        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float)
+        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - _ti_anchor) * 52 + frame[WEEK_COL] + 1).astype(float)
     if TIME_INDEX_SQ_COL in coef_dict:
-        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float))
+        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - _ti_anchor) * 52 + frame[WEEK_COL] + 1).astype(float))
     if YEAR_INDICATOR_2025_COL in coef_dict:
         frame[YEAR_INDICATOR_2025_COL] = (frame[YEAR_COL] == 2025).astype(float)
     if YEAR_INDICATOR_2026_COL in coef_dict:
@@ -2849,12 +2853,14 @@ def build_forecast_predictions_for_entity(
     if last_fitted_model is None or last_scaler is None or last_y_train is None or last_train_pred is None:
         raise ForecastSkipError("incomplete forecast artifacts were produced")
 
+    _anchor = int(history_entity_df[YEAR_COL].min()) if not history_entity_df.empty else 2024
     forecast_df = pd.DataFrame(forecast_rows).sort_values(["ISO_Year", "ISO_Week"]).reset_index(drop=True)
     coefficients_df = build_future_coefficients_frame(
         metadata=last_metadata,
         model_type=model_type,
         fitted_model=last_fitted_model,
         scaler=last_scaler,
+        time_index_anchor=_anchor,
     )
     if model_type == "OLS":
         training_summary_row = build_future_training_summary_row(
