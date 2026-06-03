@@ -177,32 +177,36 @@ STATE_OPTIONS = list(
     )
 )
 
-SPEND_COLUMNS = [
-    "DSP ($)",
-    "LeadGen ($)",
-    "Paid Search ($)",
-    "Paid Social ($)",
-    "Prescreen ($)",
-    "Referrals ($)",
-    "Sweepstakes ($)",
+_FALLBACK_MEDIA_PREDICTORS = [
+    "DSP", "LeadGen", "Paid Search", "Paid Social", "Prescreen", "Referrals",
 ]
 
+def _load_media_predictors() -> list[str]:
+    config_path = Path(__file__).parent.parent / "model_config.json"
+    try:
+        with open(config_path) as _f:
+            _cfg = json.load(_f)
+        predictors = _cfg.get("media_predictors", [])
+        if predictors:
+            return predictors
+    except Exception:
+        pass
+    return list(_FALLBACK_MEDIA_PREDICTORS)
+
+# Tactics included in the spend table but not in the model (no coefficient).
+# Kept so the client can see they were considered during modelling.
+_EXTRA_SPEND_TACTICS = ["Sweepstakes"]
+_MEDIA_PREDICTORS = _load_media_predictors()
+
+SPEND_COLUMNS = [f"{t} ($)" for t in _MEDIA_PREDICTORS] + [f"{t} ($)" for t in _EXTRA_SPEND_TACTICS]
+
 TACTIC_MAP = {
-    "DSP ($)":          ("DSP",          "DSP_contrib"),
-    "LeadGen ($)":      ("LeadGen",      "LeadGen_contrib"),
-    "Paid Search ($)":  ("Paid Search",  "Paid_Search_contrib"),
-    "Paid Social ($)":  ("Paid Social",  "Paid_Social_contrib"),
-    "Prescreen ($)":    ("Prescreen",    "Prescreen_contrib"),
-    "Referrals ($)":    ("Referrals",    "Referrals_contrib"),
-    "Sweepstakes ($)":  ("Sweepstakes",  "Sweepstakes_contrib"),
+    f"{t} ($)": (t, f"{t.replace(' ', '_')}_contrib")
+    for t in _MEDIA_PREDICTORS + _EXTRA_SPEND_TACTICS
 }
 
 _COL_TO_TACTIC = {col: names[0] for col, names in TACTIC_MAP.items()}
 _TACTIC_TO_COL = {v: k for k, v in _COL_TO_TACTIC.items()}
-
-# Tactics included in the spend table but not in the model (no coefficient).
-# Kept so the client can see them were considered during modelling.
-_EXTRA_SPEND_TACTICS = ["Sweepstakes"]
 
 
 def _build_tactic_map(coeff_df: pd.DataFrame) -> dict:
@@ -257,27 +261,15 @@ def _load_product_factors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Upload column aliases & normaliser ───────────────────────────────────────
-_UPLOAD_ALIASES: dict[str, str] = {
-    "date":             "Date",
-    "state":            "State",
-    "state_cd":         "State",
-    "dsp":              "DSP ($)",
-    "dsp ($)":          "DSP ($)",
-    "leadgen":          "LeadGen ($)",
-    "leadgen ($)":      "LeadGen ($)",
-    "lead gen":         "LeadGen ($)",
-    "lead gen ($)":     "LeadGen ($)",
-    "paid search":      "Paid Search ($)",
-    "paid search ($)":  "Paid Search ($)",
-    "paid social":      "Paid Social ($)",
-    "paid social ($)":  "Paid Social ($)",
-    "prescreen":        "Prescreen ($)",
-    "prescreen ($)":    "Prescreen ($)",
-    "referrals":        "Referrals ($)",
-    "referrals ($)":    "Referrals ($)",
-    "sweepstakes":      "Sweepstakes ($)",
-    "sweepstakes ($)":  "Sweepstakes ($)",
-}
+_UPLOAD_ALIASES: dict[str, str] = {"date": "Date", "state": "State", "state_cd": "State"}
+for _col in SPEND_COLUMNS:
+    _tactic = _col[: -len(" ($)")]
+    _UPLOAD_ALIASES[_col.lower()] = _col       # e.g. "dsp ($)" → "DSP ($)"
+    _UPLOAD_ALIASES[_tactic.lower()] = _col    # e.g. "dsp" → "DSP ($)"
+# LeadGen-specific: "lead gen" is a common CSV header variant
+if "LeadGen ($)" in SPEND_COLUMNS:
+    _UPLOAD_ALIASES["lead gen"] = "LeadGen ($)"
+    _UPLOAD_ALIASES["lead gen ($)"] = "LeadGen ($)"
 
 _REQUIRED_COLS = ["Date", "State"] + SPEND_COLUMNS
 
