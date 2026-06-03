@@ -27,7 +27,7 @@ DIVISION_COL = "Division"
 YEAR_COL = "ISO_YEAR"
 WEEK_COL = "ISO_WEEK"
 
-NON_DUMMY_PREDICTORS = [
+_FALLBACK_MEDIA_PREDICTORS: List[str] = [
     "DSP",
     "LeadGen",
     "Paid Search",
@@ -35,6 +35,34 @@ NON_DUMMY_PREDICTORS = [
     "Prescreen",
     "Referrals",
 ]
+
+
+def _load_media_predictors_from_config() -> List[str]:
+    """Read media_predictors from model_config.json if present, else use the fallback list.
+
+    The config file is expected at the same directory as this module:
+        model_config.json  →  {"media_predictors": ["DSP", "LeadGen", ...]}
+
+    Falls back to _FALLBACK_MEDIA_PREDICTORS when the file is absent or malformed.
+    """
+    config_path = Path(__file__).parent / "model_config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            predictors = data.get("media_predictors")
+            if (
+                isinstance(predictors, list)
+                and predictors
+                and all(isinstance(p, str) for p in predictors)
+            ):
+                return predictors
+        except (json.JSONDecodeError, OSError):
+            pass
+    return list(_FALLBACK_MEDIA_PREDICTORS)
+
+
+NON_DUMMY_PREDICTORS = _load_media_predictors_from_config()
 DEFAULT_MEDIA_PREDICTORS = list(NON_DUMMY_PREDICTORS)
 
 DUMMY_FAMILIES: Dict[str, List[str]] = {

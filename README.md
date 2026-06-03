@@ -46,6 +46,51 @@ Date | State | DSP ($) | LeadGen ($) | Paid Search ($) | Paid Social ($) | Presc
 
 A template CSV can be downloaded from the app. Uploaded files are matched flexibly — column names are case-insensitive and the `($)` suffix is optional.
 
+## Modeling pipeline
+
+The modeling pipeline lives in `build_state_division_models.py`. It trains OLS and NNLS regression models per state and division, then generates weekly and monthly forecasts from a planned future spend file.
+
+### Entry points
+
+| Function | Purpose |
+|---|---|
+| `run_model_pipeline()` | Backtest pipeline — trains on 2024-2025, evaluates on 2026 weeks 1-8, writes model artifacts |
+| `run_future_forecast()` | Forward forecast — fits on full history, generates week-by-week predictions from a future spend plan |
+| `score_spend_with_coefficients()` | Lightweight scoring from a pre-exported coefficient CSV, no re-fitting required |
+
+### Configuring media predictors
+
+Which marketing tactics the pipeline includes is controlled by `model_config.json`, a configuration file in the project root:
+
+```json
+{
+  "media_predictors": [
+    "DSP",
+    "LeadGen",
+    "Paid Search",
+    "Paid Social",
+    "Prescreen",
+    "Referrals"
+  ]
+}
+```
+
+At startup, `build_state_division_models.py` reads this file and uses the list to:
+
+- Validate that required tactic columns are present in the training data
+- Build the model design matrices
+- Prepare and validate future spend inputs
+- Structure forecast output columns
+
+**To add a new tactic:**
+
+1. Ensure the new tactic column is present in the training CSV
+2. Add its name to `media_predictors` in `model_config.json`
+3. Retrain the model via `run_model_pipeline()` or `run_future_forecast()`
+4. Load the updated `modelcoeff_and_prodfactors.csv` into the Oracle app — the new tactic column appears automatically
+
+If `model_config.json` is absent or malformed, the pipeline falls back to the six default tactics: DSP, LeadGen, Paid Search, Paid Social, Prescreen, Referrals.
+
 ## Output
 
 The predictions table includes:
