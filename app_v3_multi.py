@@ -244,6 +244,23 @@ with _fl2:
         "the full picture of planned spend is always visible."
     )
 
+st.markdown(
+    """
+    <div class='info-card'>
+        <strong>Tactic configuration — <code>model_config.json</code></strong><br><br>
+        The list of modelled media tactics is defined in <code>model_config.json</code>
+        at the project root. Both the model pipeline
+        (<code>build_state_division_models.py</code>) and the Scenario Runs page read
+        this file at startup.<br><br>
+        To add a new tactic, edit <code>model_config.json</code> and add the tactic name
+        to the <code>"media_predictors"</code> list — no Python changes are needed.
+        If the file is missing or malformed, both files fall back to a hardcoded list
+        of the original six tactics.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.divider()
 
 # ── Pages overview ────────────────────────────────────────────────────────────
