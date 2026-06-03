@@ -27,7 +27,7 @@ DIVISION_COL = "Division"
 YEAR_COL = "ISO_YEAR"
 WEEK_COL = "ISO_WEEK"
 
-NON_DUMMY_PREDICTORS = [
+_FALLBACK_MEDIA_PREDICTORS = [
     "DSP",
     "LeadGen",
     "Paid Search",
@@ -35,6 +35,20 @@ NON_DUMMY_PREDICTORS = [
     "Prescreen",
     "Referrals",
 ]
+
+def _load_media_predictors() -> List[str]:
+    config_path = Path(__file__).parent / "model_config.json"
+    try:
+        with open(config_path) as _f:
+            _cfg = json.load(_f)
+        predictors = _cfg.get("media_predictors", [])
+        if predictors:
+            return predictors
+    except Exception:
+        pass
+    return list(_FALLBACK_MEDIA_PREDICTORS)
+
+NON_DUMMY_PREDICTORS = _load_media_predictors()
 DEFAULT_MEDIA_PREDICTORS = list(NON_DUMMY_PREDICTORS)
 
 DUMMY_FAMILIES: Dict[str, List[str]] = {
