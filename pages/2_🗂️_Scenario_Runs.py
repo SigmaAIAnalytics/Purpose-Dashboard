@@ -1023,6 +1023,10 @@ if _sc0["upload_df"] is None:
             _sc0["spend_source"]   = "spaces"
             _sc0["upload_version"] += 1
             st.session_state.spaces_errors.pop("spend", None)
+            for _other in st.session_state.scenarios[1:]:
+                if _other["upload_df"] is None:
+                    _other["upload_df"]      = _sc0["upload_df"].copy()
+                    _other["upload_version"] += 1
         except Exception as e:
             st.session_state.spaces_errors["spend"] = f"FutureSpend.csv parsed but normalise failed: {e}"
     elif _err:
@@ -1105,6 +1109,11 @@ with st.sidebar:
                     _sc["last_input_name"] = _sb_up.name
                     _sc["upload_version"] += 1
                     st.success(f"✅ {len(_sb_parsed)} rows loaded")
+                    if _si == 0:
+                        for _other in st.session_state.scenarios[1:]:
+                            if _other["upload_df"] is None:
+                                _other["upload_df"]      = _sb_parsed.copy()
+                                _other["upload_version"] += 1
                 except Exception as _sb_e:
                     st.error(str(_sb_e))
 
