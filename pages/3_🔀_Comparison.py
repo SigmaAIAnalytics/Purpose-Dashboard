@@ -34,6 +34,13 @@ st.markdown(
     section[data-testid="stSidebar"] span,
     section[data-testid="stSidebar"] div,
     section[data-testid="stSidebar"] label { color: var(--text-color) !important; }
+    div[data-testid="metric-container"] [data-testid="metric-value"] {
+        font-size: 0.95rem !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="metric-container"] [data-testid="metric-label"] p {
+        font-size: 0.7rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -297,6 +304,32 @@ def _fmt_spend(v: float) -> str:
     return f"${v:.0f}"
 
 
+def _fmt_cpf(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.1f}MM"
+    if v >= 1_000:
+        return f"${v / 1_000:.1f}K"
+    if v >= 1:
+        return f"${v:.1f}"
+    return f"${v:.1f}"
+
+
+# ── Forecast period label ─────────────────────────────────────────────────────
+_all_periods = [
+    (int(r["Calendar_Year"]) * 100 + int(r["Calendar_Month"]), r["Period"])
+    for _agg in _scene_agg.values()
+    for _, r in _agg[["Calendar_Year", "Calendar_Month", "Period"]].drop_duplicates().iterrows()
+]
+if _all_periods:
+    _min_period = min(_all_periods, key=lambda x: x[0])[1]
+    _max_period = max(_all_periods, key=lambda x: x[0])[1]
+    _period_label = _min_period if _min_period == _max_period else f"{_min_period} – {_max_period}"
+    st.markdown(
+        f"<div style='font-size:0.8rem;color:var(--text-color);opacity:0.55;margin-bottom:0.75rem'>"
+        f"Forecast period: <strong>{_period_label}</strong></div>",
+        unsafe_allow_html=True,
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Metric cards (compact, one column per active scenario)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -316,12 +349,14 @@ for _ci, _sc in enumerate(_active):
             _apps_t = int(_agg[_selected_apps_col].sum()) if _selected_apps_col in _agg.columns else None
             _appr_t = int(_agg[_approval_col].sum())      if _approval_col       in _agg.columns else None
             _orig_t = int(_agg[_origination_col].sum())   if _origination_col    in _agg.columns else None
-            _sp_s   = _spend_series.get(_sc["name"])
+            _sp_s    = _spend_series.get(_sc["name"])
             _spend_t = float(_sp_s["_total"].sum()) if _sp_s is not None and not _sp_s.empty else None
+            _cpf     = (_spend_t / _orig_t) if (_spend_t is not None and _orig_t) else None
             if _apps_t  is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
             if _appr_t  is not None: st.metric("Likely Approvals",       f"{_appr_t:,}")
             if _orig_t  is not None: st.metric("Likely Funded",           f"{_orig_t:,}")
             if _spend_t is not None: st.metric("Total Spend",             _fmt_spend(_spend_t))
+            if _cpf     is not None: st.metric("CPF",                     _fmt_cpf(_cpf))
 
 st.markdown("---")
 
