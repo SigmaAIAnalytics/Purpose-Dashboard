@@ -261,6 +261,42 @@ for _i, _sc in enumerate(_active):
         "model_orig": _model_orig,
     }
 
+# ── Monthly total spend per scenario ─────────────────────────────────────────
+_spend_series: dict[str, pd.DataFrame] = {}
+for _sc in _active:
+    _snap = _sc.get("input_snap")
+    if _snap is None or _snap.empty:
+        continue
+    _sp = _snap.copy()
+    _sp["_date"] = pd.to_datetime(_sp["Date"], errors="coerce")
+    _sp = _sp.dropna(subset=["_date"])
+    _sp["Calendar_Year"]  = _sp["_date"].dt.year
+    _sp["Calendar_Month"] = _sp["_date"].dt.month
+    if _sel_state and "State" in _sp.columns:
+        _sp = _sp[_sp["State"].isin(_sel_state)]
+    _spend_cols = [c for c in _sp.columns
+                   if c not in ("Date", "State", "_date", "Calendar_Year", "Calendar_Month")
+                   and pd.api.types.is_numeric_dtype(_sp[c])]
+    if not _spend_cols:
+        continue
+    _sp["_total"] = _sp[_spend_cols].sum(axis=1)
+    _ms = _sp.groupby(["Calendar_Year", "Calendar_Month"])["_total"].sum().reset_index()
+    _ms["Period"] = _ms["Calendar_Month"].astype(int).map(_MONTH_NAME) + " " + _ms["Calendar_Year"].astype(int).astype(str)
+    _ms["_sort"] = _ms["Calendar_Year"].astype(int) * 100 + _ms["Calendar_Month"].astype(int)
+    _ms = _ms.sort_values("_sort")
+    if _sel_month:
+        _ms = _ms[_ms["Period"].isin(_sel_month)]
+    _spend_series[_sc["name"]] = _ms[["Period", "_total"]]
+
+
+def _fmt_spend(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.1f}MM"
+    if v >= 1_000:
+        return f"${v / 1_000:.1f}K"
+    return f"${v:.0f}"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Metric cards (compact, one column per active scenario)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -280,9 +316,12 @@ for _ci, _sc in enumerate(_active):
             _apps_t = int(_agg[_selected_apps_col].sum()) if _selected_apps_col in _agg.columns else None
             _appr_t = int(_agg[_approval_col].sum())      if _approval_col       in _agg.columns else None
             _orig_t = int(_agg[_origination_col].sum())   if _origination_col    in _agg.columns else None
-            if _apps_t is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
-            if _appr_t is not None: st.metric("Likely Approvals",       f"{_appr_t:,}")
-            if _orig_t is not None: st.metric("Likely Funded",           f"{_orig_t:,}")
+            _sp_s   = _spend_series.get(_sc["name"])
+            _spend_t = float(_sp_s["_total"].sum()) if _sp_s is not None and not _sp_s.empty else None
+            if _apps_t  is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
+            if _appr_t  is not None: st.metric("Likely Approvals",       f"{_appr_t:,}")
+            if _orig_t  is not None: st.metric("Likely Funded",           f"{_orig_t:,}")
+            if _spend_t is not None: st.metric("Total Spend",             _fmt_spend(_spend_t))
 
 st.markdown("---")
 
@@ -337,41 +376,6 @@ for _sc in _active:
             if pd.notna(_period_max):
                 _ymax_vals.append(float(_period_max))
 _global_ymax = max(_ymax_vals) * 1.2 if _ymax_vals else None
-
-# ── Monthly total spend per scenario (for secondary axis on Applications chart) ─
-_spend_series: dict[str, pd.DataFrame] = {}
-for _sc in _active:
-    _snap = _sc.get("input_snap")
-    if _snap is None or _snap.empty:
-        continue
-    _sp = _snap.copy()
-    _sp["_date"] = pd.to_datetime(_sp["Date"], errors="coerce")
-    _sp = _sp.dropna(subset=["_date"])
-    _sp["Calendar_Year"]  = _sp["_date"].dt.year
-    _sp["Calendar_Month"] = _sp["_date"].dt.month
-    if _sel_state and "State" in _sp.columns:
-        _sp = _sp[_sp["State"].isin(_sel_state)]
-    _spend_cols = [c for c in _sp.columns
-                   if c not in ("Date", "State", "_date", "Calendar_Year", "Calendar_Month")
-                   and pd.api.types.is_numeric_dtype(_sp[c])]
-    if not _spend_cols:
-        continue
-    _sp["_total"] = _sp[_spend_cols].sum(axis=1)
-    _ms = _sp.groupby(["Calendar_Year", "Calendar_Month"])["_total"].sum().reset_index()
-    _ms["Period"] = _ms["Calendar_Month"].astype(int).map(_MONTH_NAME) + " " + _ms["Calendar_Year"].astype(int).astype(str)
-    _ms["_sort"] = _ms["Calendar_Year"].astype(int) * 100 + _ms["Calendar_Month"].astype(int)
-    _ms = _ms.sort_values("_sort")
-    if _sel_month:
-        _ms = _ms[_ms["Period"].isin(_sel_month)]
-    _spend_series[_sc["name"]] = _ms[["Period", "_total"]]
-
-
-def _fmt_spend(v: float) -> str:
-    if v >= 1_000_000:
-        return f"${v / 1_000_000:.1f}MM"
-    if v >= 1_000:
-        return f"${v / 1_000:.1f}K"
-    return f"${v:.0f}"
 
 
 def _make_chart(
