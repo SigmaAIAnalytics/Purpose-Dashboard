@@ -867,6 +867,7 @@ def _render_results(sc: dict, sc_idx: int, pf_data) -> None:
         + " " + _agg["Calendar_Year"].astype(int).astype(str)
     )
     m_display = _agg
+    sc["display_df"] = m_display.copy()
 
     if m_display.empty:
         st.info("No rows match the selected filters.")
@@ -986,6 +987,7 @@ def _blank_scenario(name: str) -> dict:
         "upload_df":       None,
         "results_df":      None,
         "monthly_df":      None,
+        "display_df":      None,
         "input_snap":      None,
         "upload_version":  0,
         "last_input_name": None,

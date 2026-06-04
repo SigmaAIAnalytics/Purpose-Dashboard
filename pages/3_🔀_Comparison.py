@@ -94,9 +94,20 @@ if not _active:
     st.info("No scenarios have been run yet. Go to Baseline and run at least the Baseline scenario.")
     st.stop()
 
+def _scenario_source(sc: dict) -> pd.DataFrame | None:
+    """Return the per-scenario filtered display frame if available, else fall back to the
+    full-month-filtered monthly prediction. display_df is set by _render_results on the
+    Scenario Runs page and already has grain filters, product scaling, and Not-Funded
+    redistribution applied."""
+    _disp = sc.get("display_df")
+    if _disp is not None and not _disp.empty:
+        return _disp
+    return _full_month_filter(sc.get("monthly_df"))
+
+
 # ── Build combined frame for filter option discovery ───────────────────────────
 _all_monthly = pd.concat(
-    [_full_month_filter(sc["monthly_df"]) for sc in _active if sc.get("monthly_df") is not None],
+    [_scenario_source(sc) for sc in _active if _scenario_source(sc) is not None],
     ignore_index=True,
 )
 if "Period" not in _all_monthly.columns and "Calendar_Month" in _all_monthly.columns:
@@ -127,7 +138,12 @@ _sel_dt    = _f5.multiselect("Detail_Tactic", _dt_opts, key="cmp_detail_tactic",
 
 _pf_data = st.session_state.get("product_factors_df")
 _prod_opts: list = []
-if _pf_data is not None and not _pf_data.empty and "Key" in _all_monthly.columns:
+# display_df already has PRODUCT_FUNDED as a column (after product scaling on Scenario Runs page)
+if "PRODUCT_FUNDED" in _all_monthly.columns:
+    _prod_opts = sorted(
+        v for v in _all_monthly["PRODUCT_FUNDED"].dropna().unique() if v != "Not Funded"
+    )
+elif _pf_data is not None and not _pf_data.empty and "Key" in _all_monthly.columns:
     _pf_joined = (
         _all_monthly[["Key"]].drop_duplicates()
         .merge(_pf_data[["Key", "PRODUCT_FUNDED"]], on="Key", how="inner")
@@ -156,10 +172,10 @@ _origination_col   = _orig_col_map[_view]
 _scene_agg: dict[str, pd.DataFrame] = {}
 
 for _sc in _active:
-    _mdf = _full_month_filter(_sc.get("monthly_df"))
-    if _mdf is None or _mdf.empty:
+    _src = _scenario_source(_sc)
+    if _src is None or _src.empty:
         continue
-    _mdf = _mdf.copy()
+    _mdf = _src.copy()
     if "Period" not in _mdf.columns and "Calendar_Month" in _mdf.columns:
         _mdf["Period"] = (
             _mdf["Calendar_Month"].astype(int).map(_MONTH_NAME)
@@ -173,15 +189,20 @@ for _sc in _active:
     _mdf = _apply_grain_filter(_mdf, "H_Tactic",      _sel_ht)
     _mdf = _apply_grain_filter(_mdf, "Detail_Tactic", _sel_dt)
 
-    if _sel_prod and _pf_data is not None and not _pf_data.empty and "Key" in _mdf.columns:
-        _pf_sel  = _pf_data[_pf_data["PRODUCT_FUNDED"].isin(_sel_prod)]
-        _key_shr = _pf_sel.groupby("Key")["APPLICATION_SHARE"].sum().reset_index()
-        _key_shr.columns = ["Key", "_ps"]
-        _mdf = _mdf.merge(_key_shr, on="Key", how="inner")
-        for _or in ["Allocated_Originations_Rounded", "Baseline_Originations_Rounded", "Incremental_Originations_Rounded"]:
-            if _or in _mdf.columns:
-                _mdf[_or] = (_mdf[_or].astype(float) * _mdf["_ps"]).round().astype("Int64")
-        _mdf = _mdf.drop(columns=["_ps"])
+    if _sel_prod:
+        if "PRODUCT_FUNDED" in _mdf.columns:
+            # display_df path: product scaling is already baked in, just filter rows
+            _mdf = _mdf[_mdf["PRODUCT_FUNDED"].isin(_sel_prod)]
+        elif _pf_data is not None and not _pf_data.empty and "Key" in _mdf.columns:
+            # monthly_df fallback path: apply APPLICATION_SHARE scaling via Key join
+            _pf_sel  = _pf_data[_pf_data["PRODUCT_FUNDED"].isin(_sel_prod)]
+            _key_shr = _pf_sel.groupby("Key")["APPLICATION_SHARE"].sum().reset_index()
+            _key_shr.columns = ["Key", "_ps"]
+            _mdf = _mdf.merge(_key_shr, on="Key", how="inner")
+            for _or in ["Allocated_Originations_Rounded", "Baseline_Originations_Rounded", "Incremental_Originations_Rounded"]:
+                if _or in _mdf.columns:
+                    _mdf[_or] = (_mdf[_or].astype(float) * _mdf["_ps"]).round().astype("Int64")
+            _mdf = _mdf.drop(columns=["_ps"])
 
     if _mdf.empty:
         continue
@@ -210,8 +231,9 @@ for _i, _sc in enumerate(_active):
     if _apps_sum == 0:
         continue
 
-    _model_appr = _agg[_approval_col].sum()    / _apps_sum if _approval_col    in _agg.columns else 0.0
-    _model_orig = _agg[_origination_col].sum() / _apps_sum if _origination_col in _agg.columns else 0.0
+    _appr_sum   = _agg[_approval_col].sum()      if _approval_col    in _agg.columns else 0
+    _model_appr = _appr_sum / _apps_sum          if _apps_sum > 0    else 0.0
+    _model_orig = (_agg[_origination_col].sum() / _appr_sum) if (_origination_col in _agg.columns and _appr_sum > 0) else 0.0
 
     _appr_rate = st.session_state.get(f"cmp_appr_rate_{_i}", round(_model_appr * 100)) / 100.0
     _orig_rate = st.session_state.get(f"cmp_orig_rate_{_i}", round(_model_orig * 100)) / 100.0
@@ -224,13 +246,14 @@ for _i, _sc in enumerate(_active):
         if _ar in _agg.columns and _appr_r in _agg.columns:
             _agg[_appr_r] = (_agg[_ar].astype(float) * _appr_rate).round().astype("Int64")
 
-    for _ar, _orig_r in [
-        ("Allocated_Predicted_APPS_Rounded", "Allocated_Originations_Rounded"),
-        ("Baseline_APPS_Rounded",            "Baseline_Originations_Rounded"),
-        ("Incremental_APPS_Rounded",         "Incremental_Originations_Rounded"),
+    # Funded chains from the already-overridden Approvals, not from Apps directly
+    for _appr_r, _orig_r in [
+        ("Allocated_Approved_Rounded",   "Allocated_Originations_Rounded"),
+        ("Baseline_Approved_Rounded",    "Baseline_Originations_Rounded"),
+        ("Incremental_Approved_Rounded", "Incremental_Originations_Rounded"),
     ]:
-        if _ar in _agg.columns and _orig_r in _agg.columns:
-            _agg[_orig_r] = (_agg[_ar].astype(float) * _orig_rate).round().astype("Int64")
+        if _appr_r in _agg.columns and _orig_r in _agg.columns:
+            _agg[_orig_r] = (_agg[_appr_r].astype(float) * _orig_rate).round().astype("Int64")
 
     _scene_agg[_sc["name"]] = _agg
     _rate_meta[_sc["name"]] = {
@@ -432,6 +455,68 @@ def _make_chart(
     return fig
 
 
+def _make_line_chart(
+    title: str,
+    col: str,
+    y_max: float | None,
+) -> go.Figure:
+    fig = go.Figure()
+    for _i, _sc in enumerate(_active):
+        _agg = _scene_agg.get(_sc["name"])
+        if _agg is None or _agg.empty or col not in _agg.columns:
+            continue
+        _ts = (
+            _agg.groupby(["Calendar_Year", "Calendar_Month", "Period"])[col]
+            .sum().reset_index()
+        )
+        _ts["_sort"] = _ts["Calendar_Year"].astype(int) * 100 + _ts["Calendar_Month"].astype(int)
+        _ts = _ts.sort_values("_sort")
+        _color = _SCENARIO_COLORS[_i % len(_SCENARIO_COLORS)]
+
+        fig.add_trace(go.Scatter(
+            x=_ts["Period"],
+            y=_ts[col],
+            name=_sc["name"],
+            mode="lines+markers",
+            line=dict(color=_color, width=2),
+            marker=dict(color=_color, size=6),
+            hovertemplate=f"<b>%{{x}}</b><br>{_sc['name']}: %{{y:,.0f}}<extra></extra>",
+        ))
+
+    _yaxis = dict(
+        gridcolor="rgba(148,163,184,0.15)",
+        linecolor="#94a3b8",
+        tickfont=dict(color="#94a3b8", size=11),
+        tickformat=",",
+        title=dict(
+            text=title,
+            font=dict(family="DM Serif Display, serif", size=13, color="#94a3b8"),
+            standoff=12,
+        ),
+    )
+    if y_max is not None:
+        _yaxis["range"] = [0, y_max]
+    else:
+        _yaxis["rangemode"] = "tozero"
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="DM Sans, Arial", size=12, color="#94a3b8"),
+        xaxis=dict(gridcolor="rgba(148,163,184,0.15)", linecolor="#94a3b8",
+                   tickangle=-35, tickfont=dict(color="#94a3b8", size=10)),
+        yaxis=_yaxis,
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(148,163,184,0.3)", borderwidth=1,
+                    font=dict(color="#94a3b8", size=11), orientation="h",
+                    yanchor="bottom", y=1.05, xanchor="left", x=0),
+        height=320,
+        margin=dict(l=90, r=20, t=40, b=70),
+        hoverlabel=dict(bgcolor="#1e293b", font_color="#f1f5f9", font_size=12),
+    )
+    return fig
+
+
+st.plotly_chart(_make_line_chart("Likely Funded", _origination_col, _global_ymax), use_container_width=True)
 st.plotly_chart(_make_chart("Predicted Applications", _selected_apps_col, _global_ymax, _spend_series), use_container_width=True)
 st.plotly_chart(_make_chart("Likely Approvals",       _approval_col,       _global_ymax), use_container_width=True)
 st.plotly_chart(_make_chart("Likely Funded",           _origination_col,    _global_ymax), use_container_width=True)
