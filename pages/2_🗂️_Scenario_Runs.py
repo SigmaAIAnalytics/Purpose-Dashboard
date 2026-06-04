@@ -1161,22 +1161,9 @@ _default_rows = pd.DataFrame(
      **{col: [0.0] * 5 for col in SPEND_COLUMNS}}
 )
 
-# Derive available states from the loaded model; fall back to the hardcoded list
-_state_dropdown_opts = STATE_OPTIONS
-if st.session_state.coeff_df is not None and "Key" in st.session_state.coeff_df.columns:
-    _derived_states = sorted(
-        s for s in
-        st.session_state.coeff_df["Key"].dropna()
-        .apply(lambda k: _parse_key(str(k)).get("STATE_CD", ""))
-        .unique()
-        if s
-    )
-    if _derived_states:
-        _state_dropdown_opts = _derived_states
-
 _column_config = {
     "Date":  st.column_config.DateColumn("Date", required=True),
-    "State": st.column_config.SelectboxColumn("State", options=_state_dropdown_opts, required=True),
+    "State": st.column_config.TextColumn("State", help="Two-letter state code, e.g. TX"),
     **{
         col: st.column_config.NumberColumn(col, min_value=0.0, format="%.2f", default=0.0)
         for col in SPEND_COLUMNS
