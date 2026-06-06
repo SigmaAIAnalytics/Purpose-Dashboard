@@ -181,16 +181,20 @@ _FALLBACK_MEDIA_PREDICTORS = [
     "DSP", "LeadGen", "Paid Search", "Paid Social", "Prescreen", "Referrals",
 ]
 
-def _load_media_predictors() -> list[str]:
+def _load_config() -> dict:
     config_path = Path(__file__).parent.parent / "model_config.json"
     try:
         with open(config_path) as _f:
-            _cfg = json.load(_f)
-        predictors = _cfg.get("media_predictors", [])
-        if predictors:
-            return predictors
+            return json.load(_f)
     except Exception:
-        pass
+        return {}
+
+_CONFIG = _load_config()
+
+def _load_media_predictors() -> list[str]:
+    predictors = _CONFIG.get("media_predictors", [])
+    if predictors:
+        return predictors
     return list(_FALLBACK_MEDIA_PREDICTORS)
 
 # Tactics included in the spend table but not in the model (no coefficient).
@@ -474,8 +478,8 @@ def _score_coeff_row(
         contrib[contrib_key] = round(contribution, 6)
         prediction  += contribution
 
-    # time_index  (+1 offset confirmed against Output_Data: W9/2026 → 114)
-    time_index    = (iso_year - 2024) * 52 + iso_week + 1
+    _start_year = _CONFIG.get("training_start_year", 2024)
+    time_index    = (iso_year - _start_year) * 52 + iso_week + 1
     time_index_sq = time_index ** 2
 
     ti_c_raw = coeff.get("time_index", np.nan)

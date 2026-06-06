@@ -51,6 +51,20 @@ def _load_media_predictors() -> List[str]:
 NON_DUMMY_PREDICTORS = _load_media_predictors()
 DEFAULT_MEDIA_PREDICTORS = list(NON_DUMMY_PREDICTORS)
 
+def _load_training_start_year() -> int:
+    config_path = Path(__file__).parent / "model_config.json"
+    try:
+        with open(config_path) as _f:
+            _cfg = json.load(_f)
+        year = _cfg.get("training_start_year")
+        if isinstance(year, int) and year > 2000:
+            return year
+    except Exception:
+        pass
+    return 2024
+
+_TRAINING_START_YEAR: int = _load_training_start_year()
+
 DUMMY_FAMILIES: Dict[str, List[str]] = {
     "weekly": [f"W_{idx}" for idx in range(1, 53)],
     "f_dummy": [f"F_{idx}" for idx in range(26)],
@@ -1398,8 +1412,7 @@ def add_optional_features(
 
     frame = entity_df.sort_values([YEAR_COL, WEEK_COL]).copy()
     # Calendar-based index so training and scoring (score_from_coefficients_row) agree.
-    # Formula: week 1 of 2024 = 2, week 52 of 2025 = 105, etc.
-    time_index = (frame[YEAR_COL] - 2024).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
+    time_index = (frame[YEAR_COL] - _TRAINING_START_YEAR).astype(float) * 52 + frame[WEEK_COL].astype(float) + 1
     lagged_target = frame[target_col].shift(1)
 
     if TIME_INDEX_COL in optional_features:
@@ -2106,13 +2119,11 @@ def score_from_coefficients_row(
         frame[transformed_name] = transformed.astype(float)
 
     # Reconstruct deterministic optional features when they appear in the model.
-    # time_index must match the training-window convention: week 1 of 2024 = 1,
-    # so index = (year - 2024) * 52 + week + 1.  Using row position here would
-    # give wrong values when scoring future data that doesn't start at week 1 of 2024.
+    # time_index must match the training-window convention used in _add_optional_features.
     if TIME_INDEX_COL in coef_dict:
-        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float)
+        frame[TIME_INDEX_COL] = ((frame[YEAR_COL] - _TRAINING_START_YEAR) * 52 + frame[WEEK_COL] + 1).astype(float)
     if TIME_INDEX_SQ_COL in coef_dict:
-        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - 2024) * 52 + frame[WEEK_COL] + 1).astype(float))
+        frame[TIME_INDEX_SQ_COL] = np.square(frame[TIME_INDEX_COL] if TIME_INDEX_COL in frame.columns else ((frame[YEAR_COL] - _TRAINING_START_YEAR) * 52 + frame[WEEK_COL] + 1).astype(float))
     if YEAR_INDICATOR_2025_COL in coef_dict:
         frame[YEAR_INDICATOR_2025_COL] = (frame[YEAR_COL] == 2025).astype(float)
     if YEAR_INDICATOR_2026_COL in coef_dict:
@@ -3308,6 +3319,15 @@ def run_model_pipeline(
     dataset_group_by = list(dataset_group_by or [])
     df = load_data(input_path, target_col=target_col, dataset_group_by=dataset_group_by)
 
+    global _TRAINING_START_YEAR
+    _min_idx = (df[YEAR_COL] * 52 + df[WEEK_COL]).idxmin()
+    _TRAINING_START_YEAR = int(df.loc[_min_idx, YEAR_COL])
+    _config_path = Path(__file__).parent / "model_config.json"
+    if _config_path.exists():
+        _cfg = json.loads(_config_path.read_text())
+        _cfg["training_start_year"] = _TRAINING_START_YEAR
+        _config_path.write_text(json.dumps(_cfg, indent=2))
+
     diagnostics_rows: List[Dict[str, object]] = []
     diagnostics_rows.extend(
         run_scope(
@@ -3474,6 +3494,16 @@ def run_future_forecast(
         target_col=target_col,
         dataset_group_by=requested_dataset_group_by,
     )
+
+    global _TRAINING_START_YEAR
+    _min_idx = (history_df[YEAR_COL] * 52 + history_df[WEEK_COL]).idxmin()
+    _TRAINING_START_YEAR = int(history_df.loc[_min_idx, YEAR_COL])
+    _config_path = Path(__file__).parent / "model_config.json"
+    if _config_path.exists():
+        _cfg = json.loads(_config_path.read_text())
+        _cfg["training_start_year"] = _TRAINING_START_YEAR
+        _config_path.write_text(json.dumps(_cfg, indent=2))
+
     future_df = load_future_data(
         future_input_path,
         target_col=target_col,
