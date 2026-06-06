@@ -357,8 +357,8 @@ for _ci, _sc in enumerate(_active):
             if _apps_t  is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
             if _appr_t  is not None: st.metric("Likely Approvals",       f"{_appr_t:,}")
             if _orig_t  is not None: st.metric("Likely Funded",           f"{_orig_t:,}")
-            if _spend_t is not None: st.metric("Total Spend",             _fmt_spend(_spend_t))
-            if _cpf     is not None: st.metric("CPF",                     _fmt_cpf(_cpf))
+            if _spend_t is not None: st.metric("Total Spend (State / Month)", _fmt_spend(_spend_t))
+            if _cpf     is not None: st.metric("CPF (State / Month)",         _fmt_cpf(_cpf))
 
 st.markdown("---")
 
