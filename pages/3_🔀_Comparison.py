@@ -287,13 +287,15 @@ for _sc in _active:
     if not _spend_cols:
         continue
     _sp["_total"] = _sp[_spend_cols].sum(axis=1)
-    _ms = _sp.groupby(["Calendar_Year", "Calendar_Month"])["_total"].sum().reset_index()
+    _grp_cols = ["State", "Calendar_Year", "Calendar_Month"] if "State" in _sp.columns else ["Calendar_Year", "Calendar_Month"]
+    _ms = _sp.groupby(_grp_cols)["_total"].sum().reset_index()
     _ms["Period"] = _ms["Calendar_Month"].astype(int).map(_MONTH_NAME) + " " + _ms["Calendar_Year"].astype(int).astype(str)
     _ms["_sort"] = _ms["Calendar_Year"].astype(int) * 100 + _ms["Calendar_Month"].astype(int)
-    _ms = _ms.sort_values("_sort")
+    _ms = _ms.sort_values(_grp_cols[:-2] + ["_sort"])
     if _sel_month:
         _ms = _ms[_ms["Period"].isin(_sel_month)]
-    _spend_series[_sc["name"]] = _ms[["Period", "_total"]]
+    _keep = (["State"] if "State" in _ms.columns else []) + ["Period", "_total"]
+    _spend_series[_sc["name"]] = _ms[_keep]
 
 
 def _fmt_spend(v: float) -> str:
@@ -432,10 +434,11 @@ def _make_chart(
         _ts = _ts.sort_values("_sort")
         _color = _SCENARIO_COLORS[_i % len(_SCENARIO_COLORS)]
 
-        # Merge spend into customdata if available
+        # Merge spend into customdata if available (aggregate to Period for chart annotation)
         _sp = spend_series.get(_sc["name"]) if spend_series else None
         if _sp is not None and not _sp.empty:
-            _ts = _ts.merge(_sp[["Period", "_total"]], on="Period", how="left")
+            _sp_period = _sp.groupby("Period")["_total"].sum().reset_index()
+            _ts = _ts.merge(_sp_period[["Period", "_total"]], on="Period", how="left")
             _customdata   = _ts["_total"].fillna(0).apply(_fmt_spend).values
             _texttemplate = "%{y:,.0f}<br>%{customdata}"
         else:
@@ -563,7 +566,15 @@ st.plotly_chart(_make_chart("Likely Funded",           _origination_col,    _glo
 # ══════════════════════════════════════════════════════════════════════════════
 # Full comparison table + download
 # ══════════════════════════════════════════════════════════════════════════════
+_grain_filters_active = any([_sel_ch, _sel_ht, _sel_dt, _sel_prod])
+
 with st.expander("Full comparison table"):
+    if _grain_filters_active:
+        st.caption(
+            "⚠ Spend and CPF reflect total spend by State and Month. "
+            "Channel / H_Tactic / Detail_Tactic / Product filters apply to Applications, "
+            "Approvals and Funded but cannot filter spend — CPF should be interpreted with caution."
+        )
     _parts = []
     for _sc in _active:
         _agg = _scene_agg.get(_sc["name"])
@@ -575,18 +586,43 @@ with st.expander("Full comparison table"):
             .sum().reset_index()
         )
         _ts["_sort"] = _ts["Calendar_Year"].astype(int) * 100 + _ts["Calendar_Month"].astype(int)
-        _ts = _ts.sort_values(["State", "_sort"])[["State", "Period"] + _use_cols].rename(columns={
+        _ts = _ts.sort_values(["State", "_sort"])[["State", "Period"] + _use_cols]
+
+        # Join spend at State × Period level
+        _sp = _spend_series.get(_sc["name"])
+        if _sp is not None and not _sp.empty:
+            _join_cols = ["State", "Period"] if "State" in _sp.columns else ["Period"]
+            _ts = _ts.merge(_sp[_join_cols + ["_total"]], on=_join_cols, how="left")
+            if _origination_col in _ts.columns:
+                _orig = _ts[_origination_col].replace(0, pd.NA)
+                _ts["_cpf"] = (_ts["_total"] / _orig.astype(float)).where(_orig.notna())
+
+        _rename = {
             _selected_apps_col: f"{_sc['name']} — Applications",
             _approval_col:      f"{_sc['name']} — Approvals",
             _origination_col:   f"{_sc['name']} — Funded",
-        })
+        }
+        if "_total" in _ts.columns:
+            _rename["_total"] = f"{_sc['name']} — Spend"
+        if "_cpf" in _ts.columns:
+            _rename["_cpf"] = f"{_sc['name']} — CPF"
+        _ts = _ts.rename(columns=_rename)
         _parts.append(_ts.set_index(["State", "Period"]))
 
     if _parts:
-        _wide     = pd.concat(_parts, axis=1).reset_index()
-        _num_cols = [c for c in _wide.columns if c not in ("State", "Period")]
+        _wide = pd.concat(_parts, axis=1).reset_index()
+
+        # Format spend and CPF columns as strings; apply number format to the rest
+        _display = _wide.copy()
+        for _c in _wide.columns:
+            if "— Spend" in _c:
+                _display[_c] = _wide[_c].apply(lambda v: _fmt_spend(v) if pd.notna(v) else "—")
+            elif "— CPF" in _c:
+                _display[_c] = _wide[_c].apply(lambda v: _fmt_cpf(v) if pd.notna(v) else "—")
+        _num_cols = [c for c in _wide.columns
+                     if c not in ("State", "Period") and "— Spend" not in c and "— CPF" not in c]
         st.dataframe(
-            _wide.style.format({c: "{:,.0f}" for c in _num_cols}, na_rep="—"),
+            _display.style.format({c: "{:,.0f}" for c in _num_cols}, na_rep="—"),
             use_container_width=True,
             hide_index=True,
         )
