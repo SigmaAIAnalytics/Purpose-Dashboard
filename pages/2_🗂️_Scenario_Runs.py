@@ -1226,7 +1226,6 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
             hide_index=True,
             key=f"spend_editor_{_ti}_{_sc['upload_version']}",
         )
-        _sc["upload_df"] = _edited_df
 
         st.markdown("<br>", unsafe_allow_html=True)
         _btn_col, _tmpl_col = st.columns([2, 1])
@@ -1254,6 +1253,7 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
                 if _valid_rows.empty:
                     st.error("⚠️ Input table must have at least one row with a valid Date and State.")
                 else:
+                    _sc["upload_df"] = _edited_df.copy()
                     with st.spinner(f"Running {_sc['name']}…"):
                         _res, _mon = run_scenario(_valid_rows, st.session_state.coeff_df)
                     _sc["results_df"] = _res
