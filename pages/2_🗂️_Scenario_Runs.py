@@ -1226,6 +1226,7 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
             hide_index=True,
             key=f"spend_editor_{_ti}_{_sc['upload_version']}",
         )
+        _sc["upload_df"] = _edited_df
 
         st.markdown("<br>", unsafe_allow_html=True)
         _btn_col, _tmpl_col = st.columns([2, 1])
