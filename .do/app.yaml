@@ -16,3 +16,5 @@ services:
     value: "true"
   - key: STREAMLIT_SERVER_ENABLE_CORS
     value: "false"
+  - key: SPACES_HIST_FILE
+    value: "historical_spend.csv"

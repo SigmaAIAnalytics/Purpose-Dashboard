@@ -175,6 +175,80 @@ with col_b:
 
 st.divider()
 
+# ── Historical page ───────────────────────────────────────────────────────────
+st.markdown("## Historical Page")
+st.markdown(
+    "The **📈 Historical** page lets you explore actual marketing spend and loan application "
+    "outcomes side by side. Stacked bars show spend by tactic on the left axis; "
+    "Applications, Approvals, and Funded lines sit above them on the right axis."
+)
+
+_h1, _h2 = st.columns(2)
+with _h1:
+    st.markdown(
+        """
+        <div class='step-card'>
+            <div class='step-number'>1</div>
+            <div class='step-title'>Upload your data</div>
+            <div class='step-body'>
+                Use the <strong>Upload historical spend file</strong> button in the sidebar.
+                Accepted formats: CSV or Excel. If a <code>historical_spend.csv</code> file
+                is already present in the project folder it loads automatically — an uploaded
+                file always takes priority.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class='step-card'>
+            <div class='step-number'>2</div>
+            <div class='step-title'>Filter by State</div>
+            <div class='step-body'>
+                Use the <strong>State</strong> dropdown above the chart to narrow to one or
+                more states. Spend bars show the <em>sum</em> of each state's monthly spend.
+                The metric lines and Y-axis scale are also locked to the selected states,
+                so the axis does not rescale when you adjust other filters.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with _h2:
+    st.markdown(
+        """
+        <div class='step-card'>
+            <div class='step-number'>3</div>
+            <div class='step-title'>Drill into metrics</div>
+            <div class='step-body'>
+                The <strong>Channel</strong>, <strong>H Tactic</strong>,
+                <strong>Detail Tactic</strong>, and <strong>Product</strong> dropdowns
+                filter the Applications, Approvals, and Funded lines only — spend bars
+                are unaffected. Leave any dropdown blank to include all values.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class='step-card'>
+            <div class='step-number'>4</div>
+            <div class='step-title'>Read the chart</div>
+            <div class='step-body'>
+                Hover over any month to see a unified tooltip with spend broken out by
+                tactic, a <strong>Total Spend</strong> row, and the count of
+                Applications, Approvals, and Funded loans — all formatted to one decimal
+                place for spend and whole numbers for outcomes.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.divider()
+
 # ── Spend file format ─────────────────────────────────────────────────────────
 st.markdown("## Spend File Format")
 st.markdown(
@@ -266,7 +340,7 @@ st.divider()
 # ── Pages overview ────────────────────────────────────────────────────────────
 st.markdown("## Pages")
 
-_p1, _p2, _p3 = st.columns(3)
+_p1, _p2, _p3, _p4 = st.columns(4)
 with _p1:
     st.markdown("**🏠 Home** *(this page)*")
     st.markdown("Overview and instructions.")
@@ -282,6 +356,13 @@ with _p3:
         "Side-by-side bar charts and a full table comparing "
         "Applications, Approvals, and Funded loans across all run scenarios. "
         "Supports Approval and Conversion Rate overrides and product-level filtering."
+    )
+with _p4:
+    st.markdown("**📈 Historical**")
+    st.markdown(
+        "Interactive chart of actual marketing spend (stacked bars) and loan application "
+        "outcomes (lines) by month. Filter by State, Channel, H Tactic, Detail Tactic, "
+        "and Product. Upload a historical spend CSV or Excel file directly from this page."
     )
 
 st.markdown(

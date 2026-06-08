@@ -291,6 +291,213 @@ def prepare_future_spend_data(
     return prepared
 
 
+_QUARTER_MONTHS: Dict[str, List[int]] = {
+    "Q1": [1, 2, 3],
+    "Q2": [4, 5, 6],
+    "Q3": [7, 8, 9],
+    "Q4": [10, 11, 12],
+}
+
+_MONTH_NAME_TO_NUM: Dict[str, int] = {}
+for _i, _name in enumerate(calendar.month_name):
+    if _name:
+        _MONTH_NAME_TO_NUM[_name.lower()] = _i
+        _MONTH_NAME_TO_NUM[_name[:3].lower()] = _i
+
+
+def _resolve_periods(periods: Sequence[str], reference_date: date) -> List[date]:
+    """Parse a list of period tokens into sorted first-of-month dates.
+
+    Accepted token forms:
+        - Quarter:    ``"Q1"``, ``"Q2"``, ``"Q3"``, ``"Q4"``
+        - Month name: ``"June"``, ``"Jun"``, ``"july"``
+        - Month num:  ``"6"``, ``"12"``
+        - With year:  ``"Q3 2026"``, ``"June 2027"``, ``"7 2026"``
+
+    When no year is given the nearest occurrence on or after the current
+    calendar month of ``reference_date`` is used.
+    """
+    month_dates: Set[date] = set()
+    for token in periods:
+        token = str(token).strip()
+        parts = token.split()
+        explicit_year: Optional[int] = None
+        if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 4:
+            explicit_year = int(parts[1])
+            token = parts[0]
+
+        def _year_for(month_num: int) -> int:
+            if explicit_year is not None:
+                return explicit_year
+            return reference_date.year if month_num >= reference_date.month else reference_date.year + 1
+
+        upper = token.upper()
+        if upper in _QUARTER_MONTHS:
+            for m in _QUARTER_MONTHS[upper]:
+                month_dates.add(date(_year_for(m), m, 1))
+        else:
+            try:
+                m = int(token)
+            except ValueError:
+                m = _MONTH_NAME_TO_NUM.get(token.lower())
+                if m is None:
+                    raise ValueError(
+                        f"Cannot parse period '{token}'. "
+                        "Use a month name, number 1-12, or Q1-Q4 (optionally followed by a year)."
+                    )
+            if not 1 <= m <= 12:
+                raise ValueError(f"Month number {m} out of range 1-12.")
+            month_dates.add(date(_year_for(m), m, 1))
+
+    return sorted(month_dates)
+
+
+def build_baseline_spend_file(
+    spend_input: Union[str, Path, pd.DataFrame],
+    output_path: Optional[Union[str, Path]] = None,
+    lookback_months: Optional[int] = None,
+    periods: Optional[Sequence[str]] = None,
+    forecast_months: int = 12,
+    reference_date: Optional[date] = None,
+) -> pd.DataFrame:
+    """Build a seasonally-aware baseline monthly spend file from raw spend transactions.
+
+    Accepts the raw marketing spend extract with columns:
+        DETAIL_TACTIC, BUSINESS_DATE, STATE_CD, TOTAL_COST
+
+    For each State and calendar month-of-year, sums daily transactions to monthly
+    totals then averages those totals across years. Those averages are written for
+    the requested output periods.
+
+    Output matches the app's FutureSpend.csv layout:
+        Date, State, DSP ($), LeadGen ($), Paid Search ($), Paid Social ($),
+        Prescreen ($), Referrals ($), Sweepstakes ($)
+
+    Parameters:
+        spend_input: Raw spend CSV path or DataFrame with DETAIL_TACTIC,
+            BUSINESS_DATE, STATE_CD, and TOTAL_COST columns.
+        output_path: Optional CSV path to write the result.
+        lookback_months: If set, only data within this many trailing months before
+            ``reference_date`` is used to compute averages. If omitted, all
+            available data in the spend file is used.
+        periods: Explicit list of months/quarters to generate, e.g.
+            ``["June", "Q3", "Q4"]`` or ``["Q3 2026", "Q4 2026", "Jan 2027"]``.
+            Accepted forms: quarter labels (Q1-Q4), month names or abbreviations,
+            month numbers 1-12 — each optionally followed by a 4-digit year.
+            When no year is given the nearest occurrence on or after the current
+            calendar month of ``reference_date`` is used.
+            If omitted, generates the next ``forecast_months`` consecutive months.
+        forecast_months: Number of consecutive months to generate when ``periods``
+            is not supplied. Default 12.
+        reference_date: Reference date for the lookback window and for resolving
+            period years when not explicitly stated. Defaults to today.
+    """
+    if reference_date is None:
+        reference_date = date.today()
+
+    raw = load_tabular_input(spend_input, "Raw spend input for baseline")
+
+    required = {"DETAIL_TACTIC", "BUSINESS_DATE", STATE_COL, "TOTAL_COST"}
+    missing_required = sorted(required - set(raw.columns))
+    if missing_required:
+        raise ValueError(f"build_baseline_spend_file: missing required columns: {missing_required}")
+
+    frame = raw[["DETAIL_TACTIC", "BUSINESS_DATE", STATE_COL, "TOTAL_COST"]].copy()
+    frame["BUSINESS_DATE"] = pd.to_datetime(frame["BUSINESS_DATE"], errors="coerce")
+    frame["TOTAL_COST"] = pd.to_numeric(frame["TOTAL_COST"], errors="coerce").fillna(0.0)
+    frame[STATE_COL] = frame[STATE_COL].astype(str).str.strip().str.upper()
+    frame["DETAIL_TACTIC"] = frame["DETAIL_TACTIC"].astype(str).str.strip()
+    frame = frame.dropna(subset=["BUSINESS_DATE", STATE_COL, "DETAIL_TACTIC"]).copy()
+    frame = frame[frame[STATE_COL] != "NAN"].copy()
+
+    # Keep only recognised tactics.
+    frame = frame[frame["DETAIL_TACTIC"].isin(FUTURE_SPEND_OUTPUT_TACTICS)].copy()
+
+    frame["_cal_year"] = frame["BUSINESS_DATE"].dt.year
+    frame["_cal_month"] = frame["BUSINESS_DATE"].dt.month
+
+    if lookback_months is not None:
+        cutoff = pd.Timestamp(reference_date) - pd.DateOffset(months=lookback_months)
+        frame = frame[frame["BUSINESS_DATE"] >= cutoff].copy()
+
+    if frame.empty:
+        raise ValueError("build_baseline_spend_file: no data found in the spend file.")
+
+    # Sum daily transactions to monthly totals per State × Tactic × year-month.
+    monthly = (
+        frame.groupby([STATE_COL, "DETAIL_TACTIC", "_cal_year", "_cal_month"], as_index=False)["TOTAL_COST"]
+        .sum()
+    )
+
+    # Average monthly totals across years, preserving calendar month for seasonality.
+    avg_by_cal_month = (
+        monthly.groupby([STATE_COL, "DETAIL_TACTIC", "_cal_month"], as_index=False)["TOTAL_COST"]
+        .mean()
+    )
+
+    # Pivot tactics wide so each tactic becomes a column.
+    avg_wide = avg_by_cal_month.pivot_table(
+        index=[STATE_COL, "_cal_month"],
+        columns="DETAIL_TACTIC",
+        values="TOTAL_COST",
+        aggfunc="sum",
+        fill_value=0.0,
+    ).reset_index()
+    avg_wide.columns.name = None
+    for tactic in FUTURE_SPEND_OUTPUT_TACTICS:
+        if tactic not in avg_wide.columns:
+            avg_wide[tactic] = 0.0
+
+    # Resolve output dates from explicit periods or consecutive forecast window.
+    if periods is not None:
+        forecast_dates = _resolve_periods(periods, reference_date)
+    else:
+        def _next_month(d: date) -> date:
+            return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+
+        forecast_start = _next_month(date(reference_date.year, reference_date.month, 1))
+        forecast_dates = []
+        d = forecast_start
+        for _ in range(forecast_months):
+            forecast_dates.append(d)
+            d = _next_month(d)
+
+    states = sorted(avg_wide[STATE_COL].unique())
+    output_rows: List[Dict[str, Any]] = []
+    for fdate in forecast_dates:
+        cal_month = fdate.month
+        for state in states:
+            mask = (avg_wide[STATE_COL] == state) & (avg_wide["_cal_month"] == cal_month)
+            match = avg_wide[mask]
+            if match.empty:
+                # Fallback: use that state's overall monthly average across all months.
+                fallback = monthly[monthly[STATE_COL] == state]
+                avg_vals = (
+                    fallback.groupby("DETAIL_TACTIC")["TOTAL_COST"].mean()
+                    if not fallback.empty
+                    else pd.Series({t: 0.0 for t in FUTURE_SPEND_OUTPUT_TACTICS})
+                )
+            else:
+                avg_vals = match[FUTURE_SPEND_OUTPUT_TACTICS].iloc[0]
+            row: Dict[str, Any] = {"Date": fdate, "State": state}
+            for tactic in FUTURE_SPEND_OUTPUT_TACTICS:
+                row[f"{tactic} ($)"] = round(float(avg_vals.get(tactic, 0.0)), 2)
+            output_rows.append(row)
+
+    if not output_rows:
+        return pd.DataFrame()
+
+    out_tactic_cols = [f"{t} ($)" for t in FUTURE_SPEND_OUTPUT_TACTICS]
+    result = pd.DataFrame(output_rows)[["Date", "State"] + out_tactic_cols]
+    result = result.sort_values(["Date", "State"]).reset_index(drop=True)
+
+    if output_path is not None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        result.to_csv(output_path, index=False)
+
+    return result
+
+
 def spread_monthly_spend_to_weekly(
     df: pd.DataFrame,
     monthly_tactics: Optional[Sequence[str]] = None,
