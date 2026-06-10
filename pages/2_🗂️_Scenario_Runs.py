@@ -1048,14 +1048,6 @@ if _sc0["upload_df"] is None:
     elif _err:
         st.session_state.spaces_errors["spend"] = _err
 
-# ── Pre-warm: run baseline predictions into cache so subsequent sessions skip compute ─
-if st.session_state.coeff_df is not None and st.session_state.scenarios[0].get("upload_df") is not None:
-    try:
-        run_scenario(st.session_state.scenarios[0]["upload_df"], st.session_state.coeff_df)
-    except Exception:
-        pass
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1276,6 +1268,22 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
                     _sc["results_df"] = _res
                     _sc["input_snap"] = _valid_rows.copy()
                     _sc["monthly_df"] = _mon
+
+        # Auto-run on first visit if data is loaded but predictions haven't run yet.
+        # run_scenario is cached — Scenario 0 computes once; Scenarios 1-3 (same data) are instant cache hits.
+        if (
+            not _run_clicked
+            and _sc["upload_df"] is not None
+            and _sc["results_df"] is None
+            and st.session_state.coeff_df is not None
+        ):
+            _auto_rows = _sc["upload_df"].dropna(subset=["Date", "State"])
+            _auto_rows = _auto_rows[_auto_rows["State"].astype(str).str.strip() != ""]
+            if not _auto_rows.empty:
+                _res, _mon = run_scenario(_auto_rows, st.session_state.coeff_df)
+                _sc["results_df"] = _res
+                _sc["input_snap"] = _auto_rows.copy()
+                _sc["monthly_df"] = _mon
 
         # Results section — only shown after a successful run
         _render_results(_sc, _ti, st.session_state.product_factors_df)
