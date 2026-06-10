@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import streamlit as st
+from oracle_init import init_session_state, load_from_spaces, prewarm_predictions
 
 st.set_page_config(
     page_title="Oracle — Purpose Dashboard",
@@ -91,6 +92,13 @@ st.markdown(
     "Marketing Mix Modelling — spend forecasting for loan applications</p>",
     unsafe_allow_html=True,
 )
+# Initialise session state and pre-compute predictions from Spaces on every page load.
+# On DO (Spaces configured): loads data + runs predictions so Scenario Runs opens instantly.
+# Locally (no Spaces): all three calls are silent no-ops.
+init_session_state()
+load_from_spaces()
+prewarm_predictions()
+
 st.divider()
 
 # ── What is Oracle ────────────────────────────────────────────────────────────
