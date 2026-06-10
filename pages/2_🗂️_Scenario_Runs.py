@@ -293,6 +293,7 @@ def _normalise_upload(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── DigitalOcean Spaces helpers ───────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
 def _get_spaces_client():
     key    = os.environ.get("SPACES_KEY", "")
     secret = os.environ.get("SPACES_SECRET", "")
@@ -339,6 +340,16 @@ def _load_df_from_spaces(
         return pd.read_csv(BytesIO(data)), ""
     except Exception as e:
         return None, f"{filename}: {e}"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_load_model():
+    return _load_df_from_spaces("SPACES_MODEL_FILE", "modelcoeff_and_prodfactors.csv")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_load_spend():
+    return _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
 
 
 # ── Comments helpers ──────────────────────────────────────────────────────────
@@ -628,6 +639,7 @@ def to_excel_bytes(results_df: pd.DataFrame, input_df: pd.DataFrame) -> bytes:
 
 
 # ── Scenario runner ───────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
 def run_scenario(spend_df: pd.DataFrame, coeff_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Score a spend dataframe. Returns (results_df, monthly_df)."""
     weekly_df  = _monthly_to_weekly(spend_df.copy())
@@ -1007,11 +1019,9 @@ for _si in range(1, 4):
     if _nk in st.session_state:
         st.session_state.scenarios[_si]["name"] = st.session_state[_nk] or f"Scenario {_si}"
 
-# ── Auto-load from DO Spaces (runs once per session when no file is loaded) ───
+# ── Auto-load from DO Spaces (cached at process level — shared across sessions) ─
 if st.session_state.coeff_df is None:
-    _spaces_model, _err = _load_df_from_spaces(
-        "SPACES_MODEL_FILE", "modelcoeff_and_prodfactors.csv"
-    )
+    _spaces_model, _err = _cached_load_model()
     if _spaces_model is not None:
         st.session_state.coeff_df            = _load_coeff_df(_spaces_model)
         st.session_state.product_factors_df  = _load_product_factors(_spaces_model)
@@ -1022,7 +1032,7 @@ if st.session_state.coeff_df is None:
 
 _sc0 = st.session_state.scenarios[0]
 if _sc0["upload_df"] is None:
-    _spaces_spend, _err = _load_df_from_spaces("SPACES_SPEND_FILE", "FutureSpend.csv")
+    _spaces_spend, _err = _cached_load_spend()
     if _spaces_spend is not None:
         try:
             _sc0["upload_df"]      = _normalise_upload(_spaces_spend)
@@ -1037,6 +1047,13 @@ if _sc0["upload_df"] is None:
             st.session_state.spaces_errors["spend"] = f"FutureSpend.csv parsed but normalise failed: {e}"
     elif _err:
         st.session_state.spaces_errors["spend"] = _err
+
+# ── Pre-warm: run baseline predictions into cache so subsequent sessions skip compute ─
+if st.session_state.coeff_df is not None and st.session_state.scenarios[0].get("upload_df") is not None:
+    try:
+        run_scenario(st.session_state.scenarios[0]["upload_df"], st.session_state.coeff_df)
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
