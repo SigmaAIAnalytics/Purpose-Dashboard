@@ -596,12 +596,18 @@ with st.sidebar:
                     _sc["upload_df"]       = _sb_parsed
                     _sc["last_input_name"] = _sb_up.name
                     _sc["upload_version"] += 1
+                    _sc["results_df"]      = None
+                    _sc["monthly_df"]      = None
+                    _sc["display_df"]      = None
                     st.success(f"✅ {len(_sb_parsed)} rows loaded")
                     if _si == 0:
                         for _other in st.session_state.scenarios[1:]:
                             if _other["upload_df"] is None:
                                 _other["upload_df"]      = _sb_parsed.copy()
                                 _other["upload_version"] += 1
+                                _other["results_df"]     = None
+                                _other["monthly_df"]     = None
+                                _other["display_df"]     = None
                 except Exception as _sb_e:
                     st.error(str(_sb_e))
 
