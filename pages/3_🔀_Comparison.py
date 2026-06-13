@@ -558,7 +558,7 @@ def _make_line_chart(
     return fig
 
 
-st.plotly_chart(_make_line_chart("Likely Funded", _origination_col, _global_ymax), use_container_width=True)
+st.plotly_chart(_make_line_chart("Likely Funded", _origination_col, None), use_container_width=True)
 st.plotly_chart(_make_chart("Predicted Applications", _selected_apps_col, _global_ymax, _spend_series), use_container_width=True)
 st.plotly_chart(_make_chart("Likely Approvals",       _approval_col,       _global_ymax), use_container_width=True)
 st.plotly_chart(_make_chart("Likely Funded",           _origination_col,    _global_ymax), use_container_width=True)
