@@ -519,7 +519,7 @@ load_from_spaces()
 for _si in range(1, 4):
     _nk = f"sc_name_{_si}"
     if _nk in st.session_state:
-        st.session_state.scenarios[_si]["name"] = st.session_state[_nk] or f"Scenario {_si}"
+        st.session_state.scenarios[_si]["name"] = st.session_state[_nk] or st.session_state.scenarios[_si]["id"]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -687,13 +687,15 @@ for _ti, (_tab, _sc) in enumerate(zip(_tabs, st.session_state.scenarios)):
         # Scenario name input (not for Baseline)
         if _ti > 0:
             _name_key = f"sc_name_{_ti}"
+            if _name_key not in st.session_state:
+                st.session_state[_name_key] = _sc["name"]
             _new_name = st.text_input(
                 "Scenario name",
                 key=_name_key,
-                placeholder=f"Scenario {_ti}",
+                placeholder=_sc["id"],
                 label_visibility="visible",
             )
-            _sc["name"] = _new_name or f"Scenario {_ti}"
+            _sc["name"] = _new_name or _sc["id"]
             st.markdown("<br>", unsafe_allow_html=True)
 
         st.markdown(

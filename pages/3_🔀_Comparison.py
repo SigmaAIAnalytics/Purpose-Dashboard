@@ -220,7 +220,7 @@ for _sc in _active:
         _agg["Calendar_Month"].astype(int).map(_MONTH_NAME)
         + " " + _agg["Calendar_Year"].astype(int).astype(str)
     )
-    _scene_agg[_sc["name"]] = _agg
+    _scene_agg[_sc["id"]] = _agg
 
 if not _scene_agg:
     st.info("No data matches the selected filters.")
@@ -231,7 +231,7 @@ if not _scene_agg:
 _rate_meta: dict[str, dict] = {}
 
 for _i, _sc in enumerate(_active):
-    _agg = _scene_agg.get(_sc["name"])
+    _agg = _scene_agg.get(_sc["id"])
     if _agg is None or _agg.empty:
         continue
     _apps_sum = int(_agg["Allocated_Predicted_APPS_Rounded"].sum()) if "Allocated_Predicted_APPS_Rounded" in _agg.columns else 0
@@ -242,8 +242,8 @@ for _i, _sc in enumerate(_active):
     _model_appr = _appr_sum / _apps_sum          if _apps_sum > 0    else 0.0
     _model_orig = (_agg[_origination_col].sum() / _appr_sum) if (_origination_col in _agg.columns and _appr_sum > 0) else 0.0
 
-    _appr_rate = st.session_state.get(f"cmp_appr_rate_{_i}", round(_model_appr * 100)) / 100.0
-    _orig_rate = st.session_state.get(f"cmp_orig_rate_{_i}", round(_model_orig * 100)) / 100.0
+    _appr_rate = st.session_state.get(f"cmp_appr_rate_{_sc['id'].replace(' ', '_')}", round(_model_appr * 100)) / 100.0
+    _orig_rate = st.session_state.get(f"cmp_orig_rate_{_sc['id'].replace(' ', '_')}", round(_model_orig * 100)) / 100.0
 
     for _ar, _appr_r in [
         ("Allocated_Predicted_APPS_Rounded", "Allocated_Approved_Rounded"),
@@ -262,8 +262,8 @@ for _i, _sc in enumerate(_active):
         if _appr_r in _agg.columns and _orig_r in _agg.columns:
             _agg[_orig_r] = (_agg[_appr_r].astype(float) * _orig_rate).round().astype("Int64")
 
-    _scene_agg[_sc["name"]] = _agg
-    _rate_meta[_sc["name"]] = {
+    _scene_agg[_sc["id"]] = _agg
+    _rate_meta[_sc["id"]] = {
         "model_appr": _model_appr,
         "model_orig": _model_orig,
     }
@@ -295,7 +295,7 @@ for _sc in _active:
     if _sel_month:
         _ms = _ms[_ms["Period"].isin(_sel_month)]
     _keep = (["State"] if "State" in _ms.columns else []) + ["Period", "_total"]
-    _spend_series[_sc["name"]] = _ms[_keep]
+    _spend_series[_sc["id"]] = _ms[_keep]
 
 
 def _fmt_spend(v: float) -> str:
@@ -337,7 +337,7 @@ if _all_periods:
 # ══════════════════════════════════════════════════════════════════════════════
 _mc_cols = st.columns(len(_active))
 for _ci, _sc in enumerate(_active):
-    _agg   = _scene_agg.get(_sc["name"])
+    _agg   = _scene_agg.get(_sc["id"])
     _color = _SCENARIO_COLORS[_ci % len(_SCENARIO_COLORS)]
     with _mc_cols[_ci]:
         st.markdown(
@@ -351,7 +351,7 @@ for _ci, _sc in enumerate(_active):
             _apps_t = int(_agg[_selected_apps_col].sum()) if _selected_apps_col in _agg.columns else None
             _appr_t = int(_agg[_approval_col].sum())      if _approval_col       in _agg.columns else None
             _orig_t = int(_agg[_origination_col].sum())   if _origination_col    in _agg.columns else None
-            _sp_s    = _spend_series.get(_sc["name"])
+            _sp_s    = _spend_series.get(_sc["id"])
             _spend_t = float(_sp_s["_total"].sum()) if _sp_s is not None and not _sp_s.empty else None
             _cpf     = (_spend_t / _orig_t) if (_spend_t is not None and _orig_t) else None
             if _apps_t  is not None: st.metric("Predicted Applications", f"{_apps_t:,}")
@@ -368,7 +368,7 @@ st.markdown("---")
 st.markdown("**Rate Overrides**")
 _rc_cols = st.columns(len(_active))
 for _ci, _sc in enumerate(_active):
-    _rd = _rate_meta.get(_sc["name"])
+    _rd = _rate_meta.get(_sc["id"])
     with _rc_cols[_ci]:
         if _rd is None:
             st.markdown(
@@ -387,12 +387,12 @@ for _ci, _sc in enumerate(_active):
             st.number_input(
                 "Approval Rate (%)", min_value=0.0, max_value=100.0,
                 value=float(round(_rd["model_appr"] * 100)), step=1.0, format="%.0f",
-                key=f"cmp_appr_rate_{_ci}",
+                key=f"cmp_appr_rate_{_sc['id'].replace(' ', '_')}",
             )
             st.number_input(
                 "Conversion Rate (%)", min_value=0.0, max_value=100.0,
                 value=float(round(_rd["model_orig"] * 100)), step=1.0, format="%.0f",
-                key=f"cmp_orig_rate_{_ci}",
+                key=f"cmp_orig_rate_{_sc['id'].replace(' ', '_')}",
             )
 
 st.markdown("---")
@@ -404,7 +404,7 @@ st.markdown("---")
 # Compute global Y max across all metrics and scenarios so all charts share the same scale
 _ymax_vals = []
 for _sc in _active:
-    _agg = _scene_agg.get(_sc["name"])
+    _agg = _scene_agg.get(_sc["id"])
     if _agg is None or _agg.empty:
         continue
     for _col in [_selected_apps_col, _approval_col, _origination_col]:
@@ -423,7 +423,7 @@ def _make_chart(
 ) -> go.Figure:
     fig = go.Figure()
     for _i, _sc in enumerate(_active):
-        _agg = _scene_agg.get(_sc["name"])
+        _agg = _scene_agg.get(_sc["id"])
         if _agg is None or _agg.empty or col not in _agg.columns:
             continue
         _ts = (
@@ -435,7 +435,7 @@ def _make_chart(
         _color = _SCENARIO_COLORS[_i % len(_SCENARIO_COLORS)]
 
         # Merge spend into customdata if available (aggregate to Period for chart annotation)
-        _sp = spend_series.get(_sc["name"]) if spend_series else None
+        _sp = spend_series.get(_sc["id"]) if spend_series else None
         if _sp is not None and not _sp.empty:
             _sp_period = _sp.groupby("Period")["_total"].sum().reset_index()
             _ts = _ts.merge(_sp_period[["Period", "_total"]], on="Period", how="left")
@@ -504,7 +504,7 @@ def _make_line_chart(
 ) -> go.Figure:
     fig = go.Figure()
     for _i, _sc in enumerate(_active):
-        _agg = _scene_agg.get(_sc["name"])
+        _agg = _scene_agg.get(_sc["id"])
         if _agg is None or _agg.empty or col not in _agg.columns:
             continue
         _ts = (
@@ -577,7 +577,7 @@ with st.expander("Full comparison table"):
         )
     _parts = []
     for _sc in _active:
-        _agg = _scene_agg.get(_sc["name"])
+        _agg = _scene_agg.get(_sc["id"])
         if _agg is None or _agg.empty:
             continue
         _use_cols = [c for c in [_selected_apps_col, _approval_col, _origination_col] if c in _agg.columns]
@@ -589,7 +589,7 @@ with st.expander("Full comparison table"):
         _ts = _ts.sort_values(["State", "_sort"])[["State", "Period"] + _use_cols]
 
         # Join spend at State × Period level
-        _sp = _spend_series.get(_sc["name"])
+        _sp = _spend_series.get(_sc["id"])
         if _sp is not None and not _sp.empty:
             _join_cols = ["State", "Period"] if "State" in _sp.columns else ["Period"]
             _ts = _ts.merge(_sp[_join_cols + ["_total"]], on=_join_cols, how="left")

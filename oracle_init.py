@@ -454,6 +454,7 @@ def run_scenario(spend_df: pd.DataFrame, coeff_df: pd.DataFrame) -> tuple[pd.Dat
 def blank_scenario(name: str) -> dict:
     return {
         "name":            name,
+        "id":              name,
         "upload_df":       None,
         "results_df":      None,
         "monthly_df":      None,
@@ -472,6 +473,10 @@ def init_session_state() -> None:
     if "spaces_errors"      not in st.session_state: st.session_state.spaces_errors       = {}
     if "scenarios"          not in st.session_state:
         st.session_state.scenarios = [blank_scenario(n) for n in _SCENARIO_NAMES]
+    else:
+        for _sc, _default_id in zip(st.session_state.scenarios, _SCENARIO_NAMES):
+            if "id" not in _sc:
+                _sc["id"] = _default_id
 
 
 def load_from_spaces() -> None:
