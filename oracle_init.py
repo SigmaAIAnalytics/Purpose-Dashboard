@@ -388,6 +388,20 @@ def run_scenario(spend_df: pd.DataFrame, coeff_df: pd.DataFrame) -> tuple[pd.Dat
     weekly_df  = monthly_to_weekly(spend_df.copy())
     results_df = run_predictions(weekly_df, coeff_df)
 
+    # Zero out predictions for any State×Week where all spend is 0.
+    # Applies only to the user's run — the internal zero-spend baseline below is intentionally untouched.
+    _zero_spend_mask = weekly_df[SPEND_COLUMNS].sum(axis=1) == 0
+    if _zero_spend_mask.any():
+        _zero_keys = (
+            weekly_df[_zero_spend_mask][["State", "ISO_YEAR", "ISO_WEEK"]]
+            .rename(columns={"ISO_YEAR": "ISO_Year", "ISO_WEEK": "ISO_Week"})
+            .drop_duplicates()
+        )
+        _zero_idx = results_df.merge(
+            _zero_keys, on=["State", "ISO_Year", "ISO_Week"], how="inner"
+        ).index
+        results_df.loc[_zero_idx, ["Predicted APPS", "Predicted APPS Raw"]] = 0
+
     zero_df = weekly_df.copy()
     for _c in SPEND_COLUMNS:
         zero_df[_c] = 0.0
