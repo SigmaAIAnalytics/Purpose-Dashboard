@@ -392,11 +392,10 @@ def run_scenario(spend_df: pd.DataFrame, coeff_df: pd.DataFrame) -> tuple[pd.Dat
     # Applies only to the user's run — the internal zero-spend baseline below is intentionally untouched.
     _zero_spend_mask = weekly_df[SPEND_COLUMNS].sum(axis=1) == 0
     if _zero_spend_mask.any():
-        _zero_keys = (
-            weekly_df[_zero_spend_mask][["State", "ISO_YEAR", "ISO_WEEK"]]
-            .rename(columns={"ISO_YEAR": "ISO_Year", "ISO_WEEK": "ISO_Week"})
-            .drop_duplicates()
-        )
+        _zw = weekly_df[_zero_spend_mask][["Date", "State"]].copy()
+        _zw["ISO_Year"] = pd.to_datetime(_zw["Date"]).apply(lambda d: d.isocalendar()[0])
+        _zw["ISO_Week"] = pd.to_datetime(_zw["Date"]).apply(lambda d: d.isocalendar()[1])
+        _zero_keys = _zw[["State", "ISO_Year", "ISO_Week"]].drop_duplicates()
         _zero_idx = results_df.merge(
             _zero_keys, on=["State", "ISO_Year", "ISO_Week"], how="inner"
         ).index
